@@ -1,0 +1,592 @@
+#!/usr/bin/env python3
+"""paddock — an enclosure for coding agents.
+
+Runs Claude Code with --dangerously-skip-permissions inside a Docker sandbox
+that only sees one workspace directory, has default-deny egress, no host
+credentials, and no Docker socket. One sandbox per workspace directory; a git
+worktree is one way to get several, a plain clone works the same.
+
+Requires: docker (daemon running) and python3 >= 3.8. Nothing else on the host.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+PADDOCK_DIR = Path(__file__).resolve().parent
+IMAGE_DIR = PADDOCK_DIR / "image"
+CONFIG_DIR = Path(os.environ.get("PADDOCK_CONFIG", Path.home() / ".config" / "paddock"))
+CACHE_DIR = Path(os.environ.get("PADDOCK_CACHE", Path.home() / ".cache" / "paddock"))
+LABEL = "paddock"
+CONTAINER_USER = "node"
+HISTORY_DIR = "/commandhistory"
+PORT_STEP = 10  # host ports for the 2nd sandbox of a profile are +10, 3rd +20, ...
+
+
+# ----------------------------------------------------------------------------- util
+def die(msg: str, code: int = 1) -> "NoReturn":  # type: ignore[name-defined]
+    print(f"paddock: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def info(msg: str) -> None:
+    print(f"paddock: {msg}", file=sys.stderr)
+
+
+def sh(args: List[str], check: bool = True, capture: bool = True, **kw) -> subprocess.CompletedProcess:
+    return subprocess.run(args, check=check, text=True,
+                          stdout=subprocess.PIPE if capture else None,
+                          stderr=subprocess.PIPE if capture else None, **kw)
+
+
+def docker(*args: str, check: bool = True, capture: bool = True) -> subprocess.CompletedProcess:
+    return sh(["docker", *args], check=check, capture=capture)
+
+
+def docker_ok() -> None:
+    if shutil.which("docker") is None:
+        die("docker not found on PATH")
+    if docker("info", check=False).returncode != 0:
+        die("docker daemon is not running")
+
+
+def git(cwd: Path, *args: str) -> Optional[str]:
+    r = sh(["git", "-C", str(cwd), *args], check=False)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+# ----------------------------------------------------------------------------- workspace
+class Workspace:
+    """A directory to sandbox. Git-aware, worktree-aware, but neither is required."""
+
+    def __init__(self, path: Path):
+        self.path = path.resolve()
+        if not self.path.is_dir():
+            die(f"not a directory: {self.path}")
+        top = git(self.path, "rev-parse", "--show-toplevel")
+        self.root = Path(top).resolve() if top else self.path
+        common = git(self.root, "rev-parse", "--git-common-dir")
+        self.common_git: Optional[Path] = None
+        if common:
+            common_path = (self.root / common).resolve() if not os.path.isabs(common) else Path(common).resolve()
+            if common_path != (self.root / ".git").resolve():
+                self.common_git = common_path  # linked worktree: .git is a file pointing here
+        # Repo name: the directory that owns the real .git (same for every worktree of a repo).
+        owner = self.common_git.parent if self.common_git else self.root
+        self.repo = owner.name
+        self.name = self.root.name
+
+    @property
+    def container(self) -> str:
+        return f"paddock-{self.name}" if self.name == self.repo else f"paddock-{self.repo}-{self.name}"
+
+    def package_json(self) -> Optional[dict]:
+        p = self.root / "package.json"
+        if p.is_file():
+            try:
+                return json.loads(p.read_text())
+            except json.JSONDecodeError:
+                return None
+        return None
+
+    def package_manager(self) -> Optional[str]:
+        pkg = self.package_json() or {}
+        pm = pkg.get("packageManager")
+        return pm.split("+")[0] if isinstance(pm, str) else None
+
+    def workspace_globs(self) -> List[str]:
+        """Package globs from pnpm-workspace.yaml or package.json#workspaces."""
+        globs: List[str] = []
+        yaml = self.root / "pnpm-workspace.yaml"
+        if yaml.is_file():
+            in_packages = False
+            for line in yaml.read_text().splitlines():
+                stripped = line.strip()
+                if re.match(r"^packages\s*:", stripped):
+                    in_packages = True
+                    continue
+                if in_packages:
+                    m = re.match(r"^-\s*['\"]?([^'\"#]+?)['\"]?\s*(#.*)?$", stripped)
+                    if m:
+                        globs.append(m.group(1).strip())
+                    elif stripped and not stripped.startswith("#"):
+                        in_packages = False
+        pkg = self.package_json() or {}
+        ws = pkg.get("workspaces")
+        if isinstance(ws, dict):
+            ws = ws.get("packages")
+        if isinstance(ws, list):
+            globs.extend(str(g) for g in ws)
+        return globs
+
+    def node_modules_dirs(self) -> List[str]:
+        """Relative paths that should be shadowed by per-sandbox volumes."""
+        if not (self.root / "package.json").is_file():
+            return []
+        out = ["node_modules"]
+        for g in self.workspace_globs():
+            if g.startswith("!"):
+                continue
+            for d in sorted(self.root.glob(g)):
+                if d.is_dir() and (d / "package.json").is_file():
+                    out.append(str((d / "node_modules").relative_to(self.root)))
+        return out
+
+    def install_command(self) -> Optional[str]:
+        r = self.root
+        if (r / "pnpm-lock.yaml").is_file():
+            return "pnpm install --frozen-lockfile"
+        if (r / "yarn.lock").is_file():
+            return "yarn install --frozen-lockfile"
+        if (r / "package-lock.json").is_file():
+            return "npm ci"
+        if (r / "package.json").is_file():
+            return "npm install"
+        return None
+
+
+# ----------------------------------------------------------------------------- profiles
+def load_json(p: Path) -> dict:
+    try:
+        return json.loads(p.read_text())
+    except json.JSONDecodeError as e:
+        die(f"invalid JSON in {p}: {e}")
+
+
+def find_profile(name: str) -> Optional[Path]:
+    for candidate in (CONFIG_DIR / "profiles" / f"{name}.json", PADDOCK_DIR / "profiles" / f"{name}.json"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def resolve_profile(ws: Workspace, explicit: Optional[str]) -> Tuple[str, dict, Optional[Path]]:
+    base = load_json(PADDOCK_DIR / "profiles" / "default.json")
+    name = explicit or ws.repo
+    path = find_profile(name)
+    if explicit and path is None:
+        die(f"profile '{explicit}' not found in {CONFIG_DIR / 'profiles'} or {PADDOCK_DIR / 'profiles'}")
+    if path is None:
+        return "default", base, None
+    merged = dict(base)
+    merged.update(load_json(path))
+    return name, merged, path
+
+
+def env_file_for(profile: str) -> Optional[Path]:
+    p = CONFIG_DIR / "env" / f"{profile}.env"
+    return p if p.is_file() else None
+
+
+# ----------------------------------------------------------------------------- image
+def build_context(profile: str, prof: dict) -> Tuple[Path, str]:
+    """Assemble the docker build context for a profile; returns (dir, content hash)."""
+    ctx = CACHE_DIR / "build" / profile
+    ctx.mkdir(parents=True, exist_ok=True)
+    for f in ("Dockerfile", "init-firewall.sh", "init-volumes.sh"):
+        shutil.copy2(IMAGE_DIR / f, ctx / f)
+    domains = (IMAGE_DIR / "base-domains.txt").read_text().rstrip("\n") + "\n"
+    if prof.get("domains"):
+        domains += "\n# profile: " + profile + "\n" + "\n".join(prof["domains"]) + "\n"
+    (ctx / "allowed-domains.txt").write_text(domains)
+    (ctx / "host-ports.txt").write_text("".join(f"{r}\n" for r in prof.get("host_ports", [])))
+    h = hashlib.sha256()
+    for f in sorted(ctx.iterdir()):
+        h.update(f.name.encode()); h.update(f.read_bytes())
+    for k in ("node", "claude_version"):
+        h.update(f"{k}={prof.get(k)}".encode())
+    return ctx, h.hexdigest()[:16]
+
+
+def image_tag(profile: str) -> str:
+    return f"paddock/{profile}:latest"
+
+
+def image_hash(tag: str) -> Optional[str]:
+    r = docker("image", "inspect", tag, "--format", "{{index .Config.Labels \"paddock.hash\"}}", check=False)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def ensure_image(profile: str, prof: dict, force: bool = False) -> str:
+    tag = image_tag(profile)
+    ctx, h = build_context(profile, prof)
+    if not force and image_hash(tag) == h:
+        return tag
+    info(f"building image {tag} (node {prof['node']}, claude {prof['claude_version']})")
+    tz = os.environ.get("TZ") or "UTC"
+    cmd = ["docker", "build", "-t", tag, "--label", f"paddock.hash={h}",
+           "--build-arg", f"NODE_VERSION={prof['node']}",
+           "--build-arg", f"CLAUDE_CODE_VERSION={prof['claude_version']}",
+           "--build-arg", f"TZ={tz}"]
+    if force:
+        cmd.append("--no-cache")
+    cmd.append(str(ctx))
+    if subprocess.run(cmd).returncode != 0:
+        die("image build failed")
+    return tag
+
+
+# ----------------------------------------------------------------------------- containers
+def container_state(name: str) -> Optional[str]:
+    r = docker("inspect", name, "--format", "{{.State.Status}}", check=False)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def container_labels(name: str) -> Dict[str, str]:
+    r = docker("inspect", name, "--format", "{{json .Config.Labels}}", check=False)
+    return json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else {}
+
+
+def all_containers() -> List[dict]:
+    r = docker("ps", "-a", "--filter", f"label={LABEL}", "--format", "{{json .}}")
+    rows = [json.loads(l) for l in r.stdout.splitlines() if l.strip()]
+    out = []
+    for row in rows:
+        labels = container_labels(row["Names"])
+        out.append({"name": row["Names"], "status": row["Status"], "state": row["State"], **labels})
+    return sorted(out, key=lambda c: c["name"])
+
+
+def host_port_free(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
+
+
+def reserved_host_ports() -> set:
+    used = set()
+    for c in all_containers():
+        for pair in (c.get("paddock.ports") or "").split(","):
+            if ":" in pair:
+                used.add(int(pair.split(":")[1]))
+    return used
+
+
+def assign_ports(container_ports: List[int]) -> Dict[int, int]:
+    """Map each container port to a free host port; keeps a profile's port set
+    aligned: 3000/3001 -> 3000/3001 for the first sandbox, 3010/3011 for the next."""
+    if not container_ports:
+        return {}
+    reserved = reserved_host_ports()
+    for offset in range(0, PORT_STEP * 100, PORT_STEP):
+        candidate = {p: p + offset for p in container_ports}
+        if all(h not in reserved and host_port_free(h) for h in candidate.values()):
+            return candidate
+    die("could not find free host ports")
+
+
+def render_env(env: Dict[str, str], ports: Dict[int, int]) -> Dict[str, str]:
+    def sub(m: "re.Match[str]") -> str:
+        key = m.group(1)
+        if key == "host":
+            return "host.docker.internal"
+        if key.startswith("port:"):
+            p = int(key.split(":", 1)[1])
+            if p not in ports:
+                die(f"env references ${{port:{p}}} but {p} is not in the profile's `ports`")
+            return str(ports[p])
+        die(f"unknown template ${{{key}}} in profile env")
+    return {k: re.sub(r"\$\{([^}]+)\}", sub, str(v)) for k, v in env.items()}
+
+
+def volume_name(ws: Workspace, suffix: str) -> str:
+    return f"{ws.container}-{suffix}"
+
+
+HOST_CLAUDE = Path.home() / ".claude"
+CONTAINER_CLAUDE = "/home/node/.claude"
+
+
+def extra_mounts(prof: dict) -> List[str]:
+    """Bind mounts from the profile: `claude_dirs` (read-only subdirs of ~/.claude,
+    e.g. skills/agents/commands) and `mounts` ("src[:dst][:ro|rw]", ro by default)."""
+    out: List[str] = []
+    for d in prof.get("claude_dirs", []):
+        src = HOST_CLAUDE / d
+        if src.is_dir():
+            out.append(f"{src}:{CONTAINER_CLAUDE}/{d}:ro")
+        else:
+            info(f"claude_dirs: {src} does not exist, skipping")
+    for spec in prof.get("mounts", []):
+        parts = str(spec).split(":")
+        src = Path(os.path.expanduser(parts[0])).resolve()
+        if not src.exists():
+            die(f"mounts: {src} does not exist")
+        mode = "ro"
+        dst = str(src)
+        rest = parts[1:]
+        if rest and rest[-1] in ("ro", "rw"):
+            mode = rest.pop()
+        if rest:
+            dst = rest[0]
+        out.append(f"{src}:{dst}:{mode}")
+    return out
+
+
+def rewritten_settings() -> Optional[str]:
+    """Host ~/.claude/settings.json with host paths translated for the sandbox."""
+    src = HOST_CLAUDE / "settings.json"
+    if not src.is_file():
+        return None
+    text = src.read_text()
+    text = text.replace(str(HOST_CLAUDE), CONTAINER_CLAUDE)
+    text = re.sub(r"/[\w./-]*/bin/node\b", "node", text)  # "/opt/homebrew/bin/node" -> "node"
+    return text
+
+
+def create_container(ws: Workspace, profile: str, prof: dict, tag: str) -> None:
+    ports = assign_ports([int(p) for p in prof.get("ports", [])])
+    env = render_env(prof.get("env", {}), ports)
+    nm_dirs = ws.node_modules_dirs() if prof.get("node_modules") == "auto" else []
+    shadow = list(dict.fromkeys(nm_dirs + list(prof.get("volumes", []))))
+    targets = [str(ws.root / rel) for rel in shadow]
+
+    cmd = ["docker", "create", "--name", ws.container, "--hostname", ws.container,
+           "--label", f"{LABEL}=1",
+           "--label", f"paddock.repo={ws.repo}",
+           "--label", f"paddock.workspace={ws.root}",
+           "--label", f"paddock.profile={profile}",
+           "--label", "paddock.ports=" + ",".join(f"{c}:{h}" for c, h in ports.items()),
+           "--cap-add=NET_ADMIN", "--cap-add=NET_RAW",
+           "--add-host", "host.docker.internal:host-gateway",
+           "-w", str(ws.root), "-u", CONTAINER_USER,
+           "-e", "CLAUDE_CONFIG_DIR=/home/node/.claude",
+           "-e", "TURBO_CACHE_DIR=/home/node/.cache/turbo",
+           "-e", "npm_config_store_dir=/home/node/.local/share/pnpm/store",
+           "-e", "NODE_OPTIONS=--max-old-space-size=4096",
+           "-e", f"PADDOCK_WORKSPACE={ws.root}",
+           "-v", f"{ws.root}:{ws.root}",
+           "-v", f"{volume_name(ws, 'claude')}:/home/node/.claude",
+           "-v", f"{volume_name(ws, 'history')}:{HISTORY_DIR}",
+           "-v", "paddock-pnpm-store:/home/node/.local/share/pnpm/store"]
+    if ws.common_git:
+        cmd += ["-v", f"{ws.common_git}:{ws.common_git}"]
+    for m in extra_mounts(prof):
+        cmd += ["-v", m]
+    for i, t in enumerate(targets):
+        cmd += ["-v", f"{volume_name(ws, f'vol{i}')}:{t}"]
+    for c, h in ports.items():
+        cmd += ["-p", f"127.0.0.1:{h}:{c}"]
+    ef = env_file_for(profile)
+    if ef:
+        cmd += ["--env-file", str(ef)]
+    for k, v in env.items():
+        cmd += ["-e", f"{k}={v}"]
+    cmd.append(tag)
+    r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if r.returncode != 0:
+        die(f"docker create failed:\n{r.stderr.strip()}")
+    docker("start", ws.container)
+    # Tell init-volumes.sh which mountpoints to chown, then provision.
+    exec_in(ws, ["bash", "-c", f"cat > {HISTORY_DIR}/.paddock-volume-targets"], input="".join(t + "\n" for t in targets))
+    provision(ws, prof, env_file_present=ef is not None)
+    if ports:
+        info("ports: " + ", ".join(f"localhost:{h} -> {c}" for c, h in ports.items()))
+
+
+def exec_in(ws: Workspace, args: List[str], tty: bool = False, input: Optional[str] = None,
+            check: bool = True, quiet: bool = False) -> int:
+    cmd = ["docker", "exec"]
+    if tty:
+        cmd.append("-it" if sys.stdin.isatty() else "-i")
+    elif input is not None:
+        cmd.append("-i")
+    cmd += ["-u", CONTAINER_USER, "-w", str(ws.root), ws.container, *args]
+    r = subprocess.run(cmd, input=input, text=True,
+                       stdout=subprocess.DEVNULL if quiet else None)
+    if check and r.returncode != 0:
+        die(f"command failed in {ws.container}: {' '.join(args)}")
+    return r.returncode
+
+
+def provision(ws: Workspace, prof: dict, env_file_present: bool) -> None:
+    info("provisioning (first start): volumes, git config, dependencies")
+    steps = ["sudo /usr/local/bin/init-volumes.sh",
+             "git config --global --add safe.directory '*'",
+             # sibling worktrees are not mounted and would look prunable
+             "git config --global gc.worktreePruneExpire never"]
+    pm = ws.package_manager()
+    if pm:
+        steps.append(f"corepack prepare {pm} --activate")
+    install = prof.get("install")
+    if install == "auto":
+        install = ws.install_command()
+    if install:
+        steps.append(install)
+    if env_file_present:
+        steps.append("(test -n \"$GH_TOKEN\" && gh auth setup-git) || echo 'paddock: GH_TOKEN not set — git push / gh will not authenticate'")
+    exec_in(ws, ["bash", "-euo", "pipefail", "-c", " && ".join(steps)])
+    if prof.get("claude_settings"):
+        settings = rewritten_settings()
+        if settings:
+            exec_in(ws, ["bash", "-c", f"test -e {CONTAINER_CLAUDE}/settings.json || cat > {CONTAINER_CLAUDE}/settings.json"], input=settings)
+            info("copied ~/.claude/settings.json into the sandbox (paths rewritten)")
+
+
+def apply_firewall(ws: Workspace) -> None:
+    exec_in(ws, ["sudo", "/usr/local/bin/init-firewall.sh"], quiet=True)
+    info("firewall applied")
+
+
+def ensure_up(ws: Workspace, profile_name: Optional[str], rebuild: bool = False) -> None:
+    docker_ok()
+    profile, prof, ppath = resolve_profile(ws, profile_name)
+    state = container_state(ws.container)
+    if state is None:
+        tag = ensure_image(profile, prof, force=rebuild)
+        info(f"creating {ws.container} (profile: {profile}{' from ' + str(ppath) if ppath else ''})")
+        create_container(ws, profile, prof, tag)
+        apply_firewall(ws)
+        return
+    labels = container_labels(ws.container)
+    _, current_hash = build_context(profile, prof)
+    if rebuild or image_hash(image_tag(profile)) != current_hash:
+        info("profile/image changed since this sandbox was created — run `paddock reset` then `paddock up` to apply")
+    if state != "running":
+        docker("start", ws.container)
+        apply_firewall(ws)
+    ports = labels.get("paddock.ports") or ""
+    if ports:
+        info("ports: " + ", ".join(f"localhost:{p.split(':')[1]} -> {p.split(':')[0]}" for p in ports.split(",")))
+
+
+def rm_container(ws: Workspace, with_volumes: bool) -> None:
+    if container_state(ws.container) is None:
+        info(f"no sandbox for {ws.root}")
+        return
+    vols: List[str] = []
+    if with_volumes:
+        r = docker("inspect", ws.container, "--format",
+                   '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}{{"\\n"}}{{end}}{{end}}')
+        vols = [v for v in r.stdout.split() if v.startswith(ws.container + "-")]
+    docker("rm", "-f", ws.container)
+    info(f"removed {ws.container}")
+    if vols:
+        docker("volume", "rm", *vols)
+        info("removed volumes: " + ", ".join(vols))
+
+
+# ----------------------------------------------------------------------------- commands
+def cmd_up(a):    ensure_up(Workspace(Path(a.path)), a.profile, a.rebuild)
+
+
+def cmd_run(a):
+    ws = Workspace(Path(a.path)); ensure_up(ws, a.profile)
+    sys.exit(exec_in(ws, ["claude", "--dangerously-skip-permissions", *a.args], tty=True, check=False))
+
+
+def cmd_shell(a):
+    ws = Workspace(Path(a.path)); ensure_up(ws, a.profile)
+    sys.exit(exec_in(ws, ["zsh"], tty=True, check=False))
+
+
+def cmd_exec(a):
+    ws = Workspace(Path(a.path)); ensure_up(ws, a.profile)
+    if not a.args:
+        die("exec needs a command: paddock exec [PATH] -- <cmd>")
+    sys.exit(exec_in(ws, a.args, tty=True, check=False))
+
+
+def cmd_stop(a):
+    ws = Workspace(Path(a.path))
+    if container_state(ws.container) == "running":
+        docker("stop", ws.container); info(f"stopped {ws.container}")
+    else:
+        info(f"{ws.container} is not running")
+
+
+def cmd_rm(a):     rm_container(Workspace(Path(a.path)), with_volumes=False)
+def cmd_reset(a):  rm_container(Workspace(Path(a.path)), with_volumes=True)
+
+
+def cmd_firewall(a):
+    ws = Workspace(Path(a.path))
+    if container_state(ws.container) != "running":
+        die(f"{ws.container} is not running")
+    apply_firewall(ws)
+
+
+def cmd_ls(a):
+    rows = all_containers()
+    if not rows:
+        print("no sandboxes"); return
+    cols = ["SANDBOX", "STATE", "PROFILE", "PORTS", "WORKSPACE"]
+    table = [[c["name"], c["state"], c.get("paddock.profile", ""),
+              " ".join(f"{p.split(':')[1]}->{p.split(':')[0]}" for p in (c.get("paddock.ports") or "").split(",") if p),
+              c.get("paddock.workspace", "")] for c in rows]
+    widths = [max(len(str(r[i])) for r in [cols] + table) for i in range(len(cols))]
+    for r in [cols] + table:
+        print("  ".join(str(v).ljust(w) for v, w in zip(r, widths)).rstrip())
+
+
+def cmd_init(a):
+    ws = Workspace(Path(a.path))
+    name = a.profile or ws.repo
+    pdir = CONFIG_DIR / "profiles"; edir = CONFIG_DIR / "env"
+    pdir.mkdir(parents=True, exist_ok=True); edir.mkdir(parents=True, exist_ok=True)
+    ppath = pdir / f"{name}.json"; epath = edir / f"{name}.env"
+    existing = find_profile(name)
+    if existing and not a.force:
+        info(f"profile '{name}' already exists: {existing} (use --force to write a new one to {ppath})")
+    else:
+        skeleton = {
+            "$comment": f"paddock profile for {ws.repo} — detected from {ws.root}",
+            "domains": [], "host_ports": [], "ports": [], "env": {},
+            "install": "auto", "node_modules": "auto", "volumes": [],
+        }
+        ppath.write_text(json.dumps(skeleton, indent=2) + "\n")
+        info(f"wrote profile {ppath}")
+    if not epath.exists():
+        shutil.copy2(PADDOCK_DIR / "env.example", epath); os.chmod(epath, 0o600)
+        info(f"wrote secrets skeleton {epath} (fill in GH_TOKEN)")
+    print(f"detected: repo={ws.repo} workspace={ws.root} package_manager={ws.package_manager()}"
+          f" install={ws.install_command()!r} node_modules={ws.node_modules_dirs()}"
+          f"{' worktree_of=' + str(ws.common_git.parent) if ws.common_git else ''}")
+
+
+def main(argv: List[str]) -> None:
+    p = argparse.ArgumentParser(prog="paddock", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    def add(name: str, fn, help: str, path: bool = True, profile: bool = True, args: bool = False):
+        s = sub.add_parser(name, help=help)
+        if path:
+            s.add_argument("path", nargs="?", default=".", help="workspace directory (default: cwd)")
+        if profile:
+            s.add_argument("--profile", "-p", help="profile name (default: repo directory name)")
+        if args:
+            s.add_argument("args", nargs=argparse.REMAINDER, help="arguments after --")
+        s.set_defaults(fn=fn)
+        return s
+
+    add("up", cmd_up, "build image if needed, create/start the sandbox").add_argument("--rebuild", action="store_true", help="rebuild the image without cache")
+    add("run", cmd_run, "up + `claude --dangerously-skip-permissions [args]`", args=True)
+    add("shell", cmd_shell, "up + zsh inside the sandbox")
+    add("exec", cmd_exec, "up + run a command inside: paddock exec [PATH] -- <cmd>", args=True)
+    add("stop", cmd_stop, "stop the sandbox", profile=False)
+    add("rm", cmd_rm, "remove the sandbox container (keeps its volumes)", profile=False)
+    add("reset", cmd_reset, "remove the sandbox container AND its volumes (node_modules, Claude login)", profile=False)
+    add("firewall", cmd_firewall, "re-apply the egress firewall", profile=False)
+    add("ls", cmd_ls, "list sandboxes", path=False, profile=False)
+    add("init", cmd_init, "write a profile + secrets skeleton for this repo").add_argument("--force", action="store_true")
+
+    a = p.parse_args(argv)
+    if getattr(a, "args", None) and a.args[0] == "--":
+        a.args = a.args[1:]
+    a.fn(a)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
