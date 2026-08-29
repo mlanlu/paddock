@@ -80,14 +80,14 @@ Policy sets are plain files in [`policies/`](policies/) (override or add your ow
 | `vscode` | marketplace + server download | VS Code *Attach to Running Container* |
 | `open` | everything | no firewall; for trusted tasks |
 
-The effective policy is **additive**: the union of the profile's `policies`, its `domains`, and any `--allow` hosts. To tighten, leave a set out. Some useful modes:
+The effective policy is **additive**: the union of the profile's `policies`, its `domains`, and any `--allow` hosts. To tighten, leave a set out. A policy set with flags stays in force while the sandbox runs; a fresh start returns to the profile's. `paddock ls` shows what each sandbox currently has (or `CLOSED` if the last firewall run failed). Some useful modes:
 
 ```bash
 paddock run                             # profile policy, e.g. github + npm
 paddock run --policies ''               # strict: Anthropic API only. The agent edits; you review and push from the host
 paddock run --policies npm              # installs allowed, no GitHub — no git push, no curl | bash from raw.githubusercontent.com
 paddock run --allow api.stripe.com      # one-off extra host
-paddock firewall --policies github,npm  # re-tighten/loosen a RUNNING sandbox, no restart
+paddock firewall --policies github,npm  # re-tighten/loosen a RUNNING sandbox, no restart; sticks until the next stop/start
 paddock run --policies open             # no firewall
 ```
 
