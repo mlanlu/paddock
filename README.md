@@ -57,6 +57,9 @@ The profile name defaults to the repo's directory name (for worktrees: the direc
   "install": "auto",        // or a command, or null. auto: pnpm/yarn/npm from the lockfile
   "node_modules": "auto",   // shadow every workspace package's node_modules with a per-sandbox volume
   "volumes": [],            // extra relative paths to shadow the same way
+  "mounts": [],             // extra host dirs, "src[:dst][:ro|rw]" (see below)
+  "claude_dirs": ["skills", "agents", "commands"],   // ~/.claude subdirs, read-only
+  "claude_settings": true,  // copy ~/.claude/settings.json in, paths rewritten
   "node": "22",
   "claude_version": "latest"
 }
@@ -65,6 +68,16 @@ The profile name defaults to the repo's directory name (for worktrees: the direc
 **Ports.** Each sandbox publishes the profile's `ports` on `127.0.0.1`. The first sandbox of a profile gets them 1:1 (`3000→3000`), the next gets `+10` (`3010→3000`), and so on, so two worktrees can both run `next dev` on 3000. `${port:N}` in `env` resolves to the host port, which is what browser-side URLs need. `paddock ls` shows the mapping.
 
 **Why volumes over `node_modules`?** The workspace is bind-mounted from macOS/Windows; Linux binaries must not land in your host `node_modules` and vice versa. Per-sandbox volumes shadow those directories. The pnpm store is one shared volume. `paddock reset` drops a sandbox's volumes.
+
+## Skills, agents, hooks and extra directories
+
+The sandbox never mounts `~/.claude` as a whole — it holds credentials, history and memory. Instead:
+
+- **`claude_dirs`** (default `["skills", "agents", "commands"]`): each `~/.claude/<dir>` is mounted **read-only** at `/home/node/.claude/<dir>`. The agent can use your skills and subagents but not rewrite them. Add `"hooks"` (and whatever they depend on, e.g. `"gsd-core"`) if your hooks should run inside too.
+- **`claude_settings`** (default `true`): your `~/.claude/settings.json` is *copied* into the sandbox at first start with `~/.claude` rewritten to `/home/node/.claude` and absolute `…/bin/node` paths reduced to `node`, so hook commands resolve inside the container. It's a copy: the agent may edit its own settings, your host file is untouched. `paddock reset` regenerates it.
+- **`mounts`**: any other directories, `"~/notes"`, `"~/notes:/mnt/notes"`, `"~/scratch:rw"` — read-only unless you say `rw`.
+
+Project-level `.claude/` (commands, settings) comes along with the checkout as usual.
 
 ## Commands
 
