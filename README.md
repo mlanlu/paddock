@@ -15,7 +15,7 @@ paddock ls
 | | |
 |---|---|
 | **Filesystem** | The workspace directory, bind-mounted at its real path. For a linked git worktree, also the repo's shared `.git` (found via `git rev-parse --git-common-dir`, mounted at its real path so the worktree pointer resolves). Nothing else from the host. |
-| **Network** | Default-deny egress (iptables/ipset). Allowed: GitHub's published IP ranges, the base list in [`image/base-domains.txt`](image/base-domains.txt) (Anthropic API, npm), plus your profile's `domains`. Baked into the image root-owned — the agent can't widen it; you rebuild. |
+| **Network** | Default-deny egress (iptables/ipset), fail-closed. What's allowed is the union of the profile's **policy sets** (`github`, `npm`, `pypi`, …; the Anthropic API is always on), its extra `domains`, and ad-hoc `--allow` hosts. Written into the root-owned `/etc/paddock` by paddock at every start — the agent can't touch it; you can retighten or loosen a running sandbox with `paddock firewall`. |
 | **Host** | `host.docker.internal` only on the TCP ranges in the profile's `host_ports` (e.g. a local Supabase / Postgres). No Docker socket. |
 | **Credentials** | Only what's in `~/.config/paddock/env/<profile>.env` (a fine-grained GitHub PAT, optional Claude token, project keys). `~/.claude`, `~/.config/gh`, `~/.ssh` are never mounted. Claude's login persists on a per-sandbox volume. |
 | **Privileges** | Runs as `node`. `sudo` works for exactly two root-owned scripts: re-applying the firewall and fixing volume ownership. |
@@ -47,6 +47,7 @@ The profile name defaults to the repo's directory name (for worktrees: the direc
 
 ```jsonc
 {
+  "policies": ["github", "npm"],                               // egress policy sets (see below)
   "domains": ["fonts.googleapis.com", "fonts.gstatic.com"],   // extra egress
   "host_ports": ["54321:54329"],                               // host.docker.internal, TCP
   "ports": [3000, 3001],                                       // container ports to publish on localhost
@@ -64,6 +65,35 @@ The profile name defaults to the repo's directory name (for worktrees: the direc
   "claude_version": "latest"
 }
 ```
+
+### Egress policy: modes that compose
+
+Policy sets are plain files in [`policies/`](policies/) (override or add your own in `~/.config/paddock/policies/`):
+
+| set | allows | note |
+|---|---|---|
+| `claude` | api.anthropic.com, sentry, statsig | always on — Claude Code can't run without it |
+| `github` | GitHub's published IP ranges + release asset hosts | git over HTTPS, `gh`, release downloads |
+| `npm` | registry.npmjs.org, registry.yarnpkg.com | npm / pnpm / yarn / corepack |
+| `pypi` | pypi.org, files.pythonhosted.org | pip / uv |
+| `apt` | deb.debian.org, security.debian.org | apt-get inside the sandbox |
+| `vscode` | marketplace + server download | VS Code *Attach to Running Container* |
+| `open` | everything | no firewall; for trusted tasks |
+
+The effective policy is **additive**: the union of the profile's `policies`, its `domains`, and any `--allow` hosts. To tighten, leave a set out. Some useful modes:
+
+```bash
+paddock run                             # profile policy, e.g. github + npm
+paddock run --policies ''               # strict: Anthropic API only. The agent edits; you review and push from the host
+paddock run --policies npm              # installs allowed, no GitHub — no git push, no curl | bash from raw.githubusercontent.com
+paddock run --allow api.stripe.com      # one-off extra host
+paddock firewall --policies github,npm  # re-tighten/loosen a RUNNING sandbox, no restart
+paddock run --policies open             # no firewall
+```
+
+**Why no deny list?** The firewall matches IPs, and hosts share them: `raw.githubusercontent.com` and `gist.github.com` sit in the same ranges as `github.com` and `api.github.com`. A sandbox that can `git push` can also fetch a script from a raw URL — you can't allow one and deny the other at this layer. So GitHub is all-or-nothing, and paddock doesn't offer a `deny` that would only work for hosts with dedicated IPs. Exact per-hostname control needs an L7 filtering proxy in front of the sandbox; that's the natural next mode.
+
+**Dependency installs** during provisioning run with the profile policy widened by `npm` + `github` (never the open internet), then the real policy is applied. Provisioning happens once per sandbox; `paddock provision` re-runs it.
 
 **Ports.** Each sandbox publishes the profile's `ports` on `127.0.0.1`. The first sandbox of a profile gets them 1:1 (`3000→3000`), the next gets `+10` (`3010→3000`), and so on, so two worktrees can both run `next dev` on 3000. `${port:N}` in `env` resolves to the host port, which is what browser-side URLs need. `paddock ls` shows the mapping.
 
@@ -86,11 +116,13 @@ paddock up      [PATH] [-p PROFILE] [--rebuild]   build image if needed, create/
 paddock run     [PATH] [-p PROFILE] [-- args]     up + claude --dangerously-skip-permissions
 paddock shell   [PATH]                            up + zsh
 paddock exec    [PATH] -- <cmd>                   up + run a command inside
+                (up/run/shell/exec also take --policies and --allow)
 paddock ls                                        sandboxes, state, ports, workspaces
 paddock stop    [PATH]
 paddock rm      [PATH]                            remove container, keep volumes
 paddock reset   [PATH]                            remove container + volumes (node_modules, Claude login)
-paddock firewall [PATH]                           re-apply the egress rules
+paddock firewall [PATH] [--policies ..] [--allow ..]   re-apply egress policy to a running sandbox
+paddock provision [PATH]                          re-run first-start provisioning (deps install)
 paddock init    [PATH] [-p PROFILE] [--force]     write profile + env skeleton
 ```
 
@@ -98,15 +130,16 @@ paddock init    [PATH] [-p PROFILE] [--force]     write profile + env skeleton
 
 ## How it works
 
-- **Image per profile**, tagged `paddock/<profile>`, rebuilt automatically when the Dockerfile, scripts, or the profile's policy change (content hash in a label). `--rebuild` forces a no-cache build.
+- **One image** (`paddock/sandbox:node<version>`), rebuilt automatically when the Dockerfile or scripts change (content hash in a label). `--rebuild` forces a no-cache build. Policy is not in the image.
 - **Container per workspace**, named `paddock-<repo>[-<dir>]`, labelled with workspace, profile and port map. `up` is idempotent; a stopped sandbox is restarted and the firewall re-applied.
 - **First start** provisions: chowns the volume mountpoints, sets `safe.directory` and `gc.worktreePruneExpire=never` (so an agent's `git worktree prune` can't drop your unmounted sibling worktrees), activates the `packageManager` from `package.json` via corepack, runs the install command, and wires `gh` as git's credential helper if `GH_TOKEN` is set.
-- **Every start** applies [`image/init-firewall.sh`](image/init-firewall.sh): flush, allow DNS/loopback, resolve the allowlist into an ipset, allow the host on the configured ports, default DROP, verify (`example.com` must fail, `api.github.com` must succeed).
+- **Every start** paddock writes the resolved policy (mode, domains, GitHub flag, host ports) into the root-owned `/etc/paddock` via `docker exec -u root`, then runs [`image/init-firewall.sh`](image/init-firewall.sh): DROP policies and the fixed rules first, then resolve the allowlist into an ipset, then verify that `example.com` is unreachable. **Fail-closed**: if resolution fails (no network), the sandbox is left with DNS only and paddock tells you to `paddock firewall` once the network is back.
 
 ## Limits and caveats
 
 - Anything that needs Docker (e.g. `supabase start`, testcontainers) has to run **on the host**; expose it to the sandbox with `host_ports`. Mounting the Docker socket would hand the agent root on your machine.
 - The allowlist is resolved to IPs at container start. CDN-backed hosts rotate; if something on the list stops resolving, `paddock firewall` re-resolves.
+- **Docker Desktop behind a VPN** (ProtonVPN, WireGuard, …) often has broken container egress: DNS works but TLS/apt/npm time out (MTU: the tunnel is ~1380, the VM assumes 1500). Symptoms: image build fails at `apt-get`, provisioning fails at `corepack`, the firewall reports it could not fetch GitHub ranges. Fix on the Docker side: Settings → Resources → Network, lower the MTU, or exclude Docker from the VPN (split tunneling), or update Docker Desktop.
 - Sibling worktrees are not mounted, so `git worktree list` inside shows them as *prunable*. `gc.worktreePruneExpire=never` protects them from a plain `prune`; `--expire now` would still remove them (recover with `git worktree repair` on the host).
 - Docker Desktop on macOS: `host.docker.internal` is the VM's view of your Mac — the container reaches host services, but the browser on your Mac uses `localhost` and the published ports.
 - No GPU, no Linux namespaces beyond what Docker gives you; this is a container, not a VM. For a stronger boundary, run Docker with a microVM runtime.
