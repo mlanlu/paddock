@@ -1,6 +1,6 @@
-# paddock sandbox image. One image per profile: the egress allowlist and the
-# host-port policy are baked in (root-owned) so the agent inside cannot widen
-# them — changing policy means a rebuild by a human (`paddock up --rebuild`).
+# paddock sandbox image. Profile-independent: egress policy is written to the
+# root-owned /etc/paddock by paddock (on the host) at every start and read by
+# init-firewall.sh. The agent runs as `node` and cannot touch either.
 #
 # Adapted from the reference Claude Code devcontainer:
 # https://github.com/anthropics/claude-code/tree/main/.devcontainer
@@ -53,12 +53,12 @@ RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/
 
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
-# Policy + privileged helpers. sudo is limited to exactly these two scripts.
+# Privileged helpers. sudo is limited to exactly these two scripts; policy in
+# /etc/paddock is root-owned and written from the host.
 USER root
 COPY init-firewall.sh init-volumes.sh /usr/local/bin/
-COPY allowed-domains.txt host-ports.txt /etc/paddock/
-RUN chmod 0755 /usr/local/bin/init-firewall.sh /usr/local/bin/init-volumes.sh && \
-  chmod 0644 /etc/paddock/allowed-domains.txt /etc/paddock/host-ports.txt && \
+RUN mkdir -p /etc/paddock && chmod 0755 /etc/paddock && \
+  chmod 0755 /usr/local/bin/init-firewall.sh /usr/local/bin/init-volumes.sh && \
   echo "node ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh, /usr/local/bin/init-volumes.sh" > /etc/sudoers.d/paddock && \
   chmod 0440 /etc/sudoers.d/paddock
 USER node
