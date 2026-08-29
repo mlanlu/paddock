@@ -19,6 +19,8 @@ import shutil
 import socket
 import subprocess
 import sys
+import time
+import urllib.request
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -245,6 +247,36 @@ def resolve_policy(prof: dict, sets_override: Optional[str], allow: Optional[str
     return Policy(sets, extra, prof.get("host_ports", []))
 
 
+GITHUB_META_TTL = 24 * 3600
+
+
+def github_ranges() -> List[str]:
+    """GitHub's published IPv4 CIDRs, fetched on the HOST (which has network
+    even when Docker Desktop's VM does not) and cached for a day."""
+    cache = CACHE_DIR / "github-meta.json"
+    data = None
+    if cache.is_file() and time.time() - cache.stat().st_mtime < GITHUB_META_TTL:
+        data = load_json(cache)
+    if data is None:
+        try:
+            with urllib.request.urlopen("https://api.github.com/meta", timeout=15) as r:
+                data = json.loads(r.read().decode())
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            cache.write_text(json.dumps(data))
+        except Exception as e:  # noqa: BLE001
+            if cache.is_file():
+                info(f"could not refresh GitHub IP ranges ({e}); using cached copy")
+                data = load_json(cache)
+            else:
+                die(f"could not fetch GitHub IP ranges from api.github.com on the host: {e}")
+    cidrs = []
+    for key in ("web", "api", "git"):
+        for c in data.get(key, []):
+            if re.match(r"^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$", c):
+                cidrs.append(c)
+    return sorted(set(cidrs))
+
+
 def state_path(container: str) -> Path:
     return CACHE_DIR / "state" / f"{container}.json"
 
@@ -432,7 +464,8 @@ def install_policy(ws: Workspace, policy: Policy) -> None:
     """Write the resolved policy into the root-owned /etc/paddock (the agent, as
     `node`, cannot), then (re)apply the firewall."""
     write_root_file(ws, f"{POLICY_DIR}/mode", "open\n" if policy.open else "enforce\n")
-    write_root_file(ws, f"{POLICY_DIR}/github", "1\n" if policy.github else "0\n")
+    write_root_file(ws, f"{POLICY_DIR}/github-ranges.txt",
+                    "".join(c + "\n" for c in github_ranges()) if policy.github else "")
     write_root_file(ws, f"{POLICY_DIR}/allowed-domains.txt", "".join(d + "\n" for d in policy.domains))
     write_root_file(ws, f"{POLICY_DIR}/host-ports.txt", "".join(r + "\n" for r in policy.host_ports))
     r = subprocess.run(["docker", "exec", "-u", CONTAINER_USER, ws.container, "sudo", "/usr/local/bin/init-firewall.sh"],

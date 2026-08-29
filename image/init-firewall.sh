@@ -5,7 +5,7 @@
 # via docker exec — never by the agent):
 #   mode                 "enforce" (default) or "open" (no restrictions)
 #   allowed-domains.txt  one hostname per line, resolved to IPv4 here
-#   github               "1" to allow GitHub's published IP ranges (api.github.com/meta)
+#   github-ranges.txt    GitHub's published IPv4 CIDRs (fetched by paddock on the host); empty = no GitHub
 #   host-ports.txt       TCP port ranges on host.docker.internal, e.g. 54321:54329
 #
 # FAIL-CLOSED: DROP policies and the fixed rules go in first; the allowlist is
@@ -68,8 +68,7 @@ ipset flush allowed-domains
 iptables -A OUTPUT -m set --match-set allowed-domains dst -j ACCEPT
 iptables -A OUTPUT -j REJECT --reject-with icmp-admin-prohibited
 
-RESOLVED=""
-resolve_into_set() {  # $1 = hostname; returns 1 if it did not resolve. Sets RESOLVED.
+resolve_into_set() {  # $1 = hostname; returns 1 if it did not resolve
     local ips ip i
     # Round-robin / CDN hosts answer differently per query: ask a few times and
     # keep the union, so a later lookup by the client still lands in the set.
@@ -79,24 +78,17 @@ resolve_into_set() {  # $1 = hostname; returns 1 if it did not resolve. Sets RES
         [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || { echo "ERROR: bad IP for $1: $ip"; exit 1; }
         ipset add allowed-domains "$ip" -exist
     done < <(echo "$ips")
-    RESOLVED="$ips"
 }
 
-# 2. Populate the allowlist.
-if [ "$(cat "$P/github" 2>/dev/null)" = "1" ]; then
-    # We are already closed, so allow api.github.com itself before asking it
-    # for the ranges (it is inside those ranges anyway).
-    resolve_into_set api.github.com || { echo "ERROR: could not resolve api.github.com (network?) — sandbox stays closed"; exit 1; }
-    # Pin curl to an IP we just allowed (the client may otherwise get a different A record).
-    gh_ranges=$(curl -s --connect-timeout 10 --resolve "api.github.com:443:$(echo "$RESOLVED" | head -1)" https://api.github.com/meta || true)
-    if [ -z "$gh_ranges" ] || ! echo "$gh_ranges" | jq -e '.web and .api and .git' >/dev/null 2>&1; then
-        echo "ERROR: could not fetch GitHub IP ranges (network?) — sandbox stays closed"; exit 1
-    fi
+# 2. Populate the allowlist. GitHub ranges come pre-fetched from the host.
+if [ -s "$P/github-ranges.txt" ]; then
+    n=0
     while read -r cidr; do
-        [[ "$cidr" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$ ]] || { echo "ERROR: bad CIDR from GitHub meta: $cidr"; exit 1; }
-        ipset add allowed-domains "$cidr" -exist
-    done < <(echo "$gh_ranges" | jq -r '(.web + .api + .git)[]' | aggregate -q)
-    echo "allowed: GitHub ranges"
+        [ -z "$cidr" ] && continue
+        [[ "$cidr" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$ ]] || { echo "ERROR: bad CIDR in github-ranges.txt: $cidr"; exit 1; }
+        ipset add allowed-domains "$cidr" -exist; n=$((n+1))
+    done < <(aggregate -q < "$P/github-ranges.txt")
+    echo "allowed: GitHub ranges ($n CIDRs)"
 fi
 
 failed=0
