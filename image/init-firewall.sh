@@ -63,12 +63,26 @@ if [ -s "$P/host-ports.txt" ] && [ -n "$HOST_IPS" ]; then
 fi
 
 # The allowlist rule + explicit reject exist before the set is populated.
-ipset create allowed-domains hash:net
+ipset create allowed-domains hash:net -exist
+ipset flush allowed-domains
 iptables -A OUTPUT -m set --match-set allowed-domains dst -j ACCEPT
 iptables -A OUTPUT -j REJECT --reject-with icmp-admin-prohibited
 
+resolve_into_set() {  # $1 = hostname; returns 1 if it did not resolve
+    local ips ip
+    ips=$(dig +noall +answer +time=3 +tries=2 A "$1" | awk '$4 == "A" {print $5}')
+    [ -n "$ips" ] || return 1
+    while read -r ip; do
+        [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || { echo "ERROR: bad IP for $1: $ip"; exit 1; }
+        ipset add allowed-domains "$ip" -exist
+    done < <(echo "$ips")
+}
+
 # 2. Populate the allowlist.
 if [ "$(cat "$P/github" 2>/dev/null)" = "1" ]; then
+    # We are already closed, so allow api.github.com itself before asking it
+    # for the ranges (it is inside those ranges anyway).
+    resolve_into_set api.github.com || { echo "ERROR: could not resolve api.github.com (network?) — sandbox stays closed"; exit 1; }
     gh_ranges=$(curl -s --connect-timeout 10 https://api.github.com/meta || true)
     if [ -z "$gh_ranges" ] || ! echo "$gh_ranges" | jq -e '.web and .api and .git' >/dev/null 2>&1; then
         echo "ERROR: could not fetch GitHub IP ranges (network?) — sandbox stays closed"; exit 1
@@ -85,13 +99,7 @@ if [ -s "$P/allowed-domains.txt" ]; then
     while read -r line; do
         domain="$(echo "${line%%#*}" | tr -d '[:space:]')"
         [ -z "$domain" ] && continue
-        ips=$(dig +noall +answer +time=3 +tries=2 A "$domain" | awk '$4 == "A" {print $5}')
-        if [ -z "$ips" ]; then echo "WARN: could not resolve $domain"; failed=1; continue; fi
-        while read -r ip; do
-            [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || { echo "ERROR: bad IP for $domain: $ip"; exit 1; }
-            ipset add allowed-domains "$ip" -exist
-        done < <(echo "$ips")
-        echo "allowed: $domain"
+        if resolve_into_set "$domain"; then echo "allowed: $domain"; else echo "WARN: could not resolve $domain"; failed=1; fi
     done < "$P/allowed-domains.txt"
 fi
 
