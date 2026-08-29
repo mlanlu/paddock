@@ -1,0 +1,4 @@
+# Always applied: Claude Code cannot work without these.
+api.anthropic.com
+sentry.io
+statsig.com

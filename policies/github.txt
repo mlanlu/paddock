@@ -1,0 +1,7 @@
+# GitHub: git over HTTPS, the API (gh), releases. All-or-nothing at this layer —
+# raw.githubusercontent.com / gist share IP ranges with github.com, so a sandbox
+# that can `git push` can also `curl | bash` from a raw URL. If that matters,
+# leave this set out and push from the host (the checkout is shared).
+@github-ranges
+objects.githubusercontent.com
+release-assets.githubusercontent.com

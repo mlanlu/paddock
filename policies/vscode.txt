@@ -1,0 +1,4 @@
+# VS Code "Attach to Running Container": server download + extension marketplace.
+marketplace.visualstudio.com
+vscode.blob.core.windows.net
+update.code.visualstudio.com

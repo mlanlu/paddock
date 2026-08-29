@@ -29,7 +29,11 @@ CACHE_DIR = Path(os.environ.get("PADDOCK_CACHE", Path.home() / ".cache" / "paddo
 LABEL = "paddock"
 CONTAINER_USER = "node"
 HISTORY_DIR = "/commandhistory"
+POLICY_DIR = "/etc/paddock"
+HOST_CLAUDE = Path.home() / ".claude"
+CONTAINER_CLAUDE = "/home/node/.claude"
 PORT_STEP = 10  # host ports for the 2nd sandbox of a profile are +10, 3rd +20, ...
+PROVISION_POLICIES = ["npm", "github"]  # what dependency installs may reach, on top of the profile
 
 
 # ----------------------------------------------------------------------------- util
@@ -62,6 +66,15 @@ def docker_ok() -> None:
 def git(cwd: Path, *args: str) -> Optional[str]:
     r = sh(["git", "-C", str(cwd), *args], check=False)
     return r.stdout.strip() if r.returncode == 0 else None
+
+
+def read_lines(p: Path) -> List[str]:
+    out = []
+    for line in p.read_text().splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            out.append(line)
+    return out
 
 
 # ----------------------------------------------------------------------------- workspace
@@ -154,7 +167,7 @@ class Workspace:
         return None
 
 
-# ----------------------------------------------------------------------------- profiles
+# ----------------------------------------------------------------------------- profiles & policy
 def load_json(p: Path) -> dict:
     try:
         return json.loads(p.read_text())
@@ -162,11 +175,15 @@ def load_json(p: Path) -> dict:
         die(f"invalid JSON in {p}: {e}")
 
 
-def find_profile(name: str) -> Optional[Path]:
-    for candidate in (CONFIG_DIR / "profiles" / f"{name}.json", PADDOCK_DIR / "profiles" / f"{name}.json"):
+def find_in_config(kind: str, name: str, ext: str) -> Optional[Path]:
+    for candidate in (CONFIG_DIR / kind / f"{name}{ext}", PADDOCK_DIR / kind / f"{name}{ext}"):
         if candidate.is_file():
             return candidate
     return None
+
+
+def find_profile(name: str) -> Optional[Path]:
+    return find_in_config("profiles", name, ".json")
 
 
 def resolve_profile(ws: Workspace, explicit: Optional[str]) -> Tuple[str, dict, Optional[Path]]:
@@ -187,18 +204,69 @@ def env_file_for(profile: str) -> Optional[Path]:
     return p if p.is_file() else None
 
 
+class Policy:
+    """Resolved egress policy: the union of the selected policy sets, the
+    profile's extra domains and any ad-hoc --allow domains. Additive only —
+    at the IP layer there is no reliable 'deny this one host'."""
+
+    def __init__(self, sets: List[str], extra: List[str], host_ports: List[str]):
+        self.sets = list(dict.fromkeys(sets))
+        self.open = "open" in self.sets
+        self.github = False
+        domains: List[str] = []
+        for name in ["claude"] + [s for s in self.sets if s != "open"]:
+            path = find_in_config("policies", name, ".txt")
+            if path is None:
+                die(f"policy set '{name}' not found in {CONFIG_DIR / 'policies'} or {PADDOCK_DIR / 'policies'}")
+            for entry in read_lines(path):
+                if entry == "@github-ranges":
+                    self.github = True
+                else:
+                    domains.append(entry)
+        domains += extra
+        self.domains = list(dict.fromkeys(domains))
+        self.extra = list(dict.fromkeys(extra))
+        self.host_ports = list(host_ports)
+
+    def describe(self) -> str:
+        if self.open:
+            return "open"
+        s = ",".join(x for x in self.sets if x != "open") or "strict"
+        return s + (f" +{len(self.extra)}" if self.extra else "")
+
+    def to_json(self) -> dict:
+        return {"sets": self.sets, "extra": self.extra, "host_ports": self.host_ports}
+
+
+def resolve_policy(prof: dict, sets_override: Optional[str], allow: Optional[str], plus: List[str] = ()) -> Policy:
+    sets = [s for s in sets_override.split(",") if s] if sets_override is not None else list(prof.get("policies", []))
+    sets += list(plus)
+    extra = list(prof.get("domains", [])) + ([d for d in allow.split(",") if d] if allow else [])
+    return Policy(sets, extra, prof.get("host_ports", []))
+
+
+def state_path(container: str) -> Path:
+    return CACHE_DIR / "state" / f"{container}.json"
+
+
+def save_state(container: str, data: dict) -> None:
+    p = state_path(container)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def load_state(container: str) -> dict:
+    p = state_path(container)
+    return load_json(p) if p.is_file() else {}
+
+
 # ----------------------------------------------------------------------------- image
-def build_context(profile: str, prof: dict) -> Tuple[Path, str]:
-    """Assemble the docker build context for a profile; returns (dir, content hash)."""
-    ctx = CACHE_DIR / "build" / profile
+def build_context(prof: dict) -> Tuple[Path, str]:
+    """Docker build context (image files only; policy is applied at start)."""
+    ctx = CACHE_DIR / "build"
     ctx.mkdir(parents=True, exist_ok=True)
     for f in ("Dockerfile", "init-firewall.sh", "init-volumes.sh"):
         shutil.copy2(IMAGE_DIR / f, ctx / f)
-    domains = (IMAGE_DIR / "base-domains.txt").read_text().rstrip("\n") + "\n"
-    if prof.get("domains"):
-        domains += "\n# profile: " + profile + "\n" + "\n".join(prof["domains"]) + "\n"
-    (ctx / "allowed-domains.txt").write_text(domains)
-    (ctx / "host-ports.txt").write_text("".join(f"{r}\n" for r in prof.get("host_ports", [])))
     h = hashlib.sha256()
     for f in sorted(ctx.iterdir()):
         h.update(f.name.encode()); h.update(f.read_bytes())
@@ -207,8 +275,8 @@ def build_context(profile: str, prof: dict) -> Tuple[Path, str]:
     return ctx, h.hexdigest()[:16]
 
 
-def image_tag(profile: str) -> str:
-    return f"paddock/{profile}:latest"
+def image_tag(prof: dict) -> str:
+    return f"paddock/sandbox:node{prof['node']}"
 
 
 def image_hash(tag: str) -> Optional[str]:
@@ -216,22 +284,21 @@ def image_hash(tag: str) -> Optional[str]:
     return r.stdout.strip() if r.returncode == 0 else None
 
 
-def ensure_image(profile: str, prof: dict, force: bool = False) -> str:
-    tag = image_tag(profile)
-    ctx, h = build_context(profile, prof)
+def ensure_image(prof: dict, force: bool = False) -> str:
+    tag = image_tag(prof)
+    ctx, h = build_context(prof)
     if not force and image_hash(tag) == h:
         return tag
     info(f"building image {tag} (node {prof['node']}, claude {prof['claude_version']})")
-    tz = os.environ.get("TZ") or "UTC"
     cmd = ["docker", "build", "-t", tag, "--label", f"paddock.hash={h}",
            "--build-arg", f"NODE_VERSION={prof['node']}",
            "--build-arg", f"CLAUDE_CODE_VERSION={prof['claude_version']}",
-           "--build-arg", f"TZ={tz}"]
+           "--build-arg", f"TZ={os.environ.get('TZ') or 'UTC'}"]
     if force:
         cmd.append("--no-cache")
     cmd.append(str(ctx))
     if subprocess.run(cmd).returncode != 0:
-        die("image build failed")
+        die("image build failed (network? Docker Desktop behind a VPN often needs a lower MTU)")
     return tag
 
 
@@ -305,10 +372,6 @@ def volume_name(ws: Workspace, suffix: str) -> str:
     return f"{ws.container}-{suffix}"
 
 
-HOST_CLAUDE = Path.home() / ".claude"
-CONTAINER_CLAUDE = "/home/node/.claude"
-
-
 def extra_mounts(prof: dict) -> List[str]:
     """Bind mounts from the profile: `claude_dirs` (read-only subdirs of ~/.claude,
     e.g. skills/agents/commands) and `mounts` ("src[:dst][:ro|rw]", ro by default)."""
@@ -346,6 +409,73 @@ def rewritten_settings() -> Optional[str]:
     return text
 
 
+def exec_in(ws: Workspace, args: List[str], tty: bool = False, input: Optional[str] = None,
+            check: bool = True, quiet: bool = False, user: str = CONTAINER_USER) -> int:
+    cmd = ["docker", "exec"]
+    if tty:
+        cmd.append("-it" if sys.stdin.isatty() else "-i")
+    elif input is not None:
+        cmd.append("-i")
+    cmd += ["-u", user, "-w", str(ws.root), ws.container, *args]
+    r = subprocess.run(cmd, input=input, text=True,
+                       stdout=subprocess.DEVNULL if quiet else None)
+    if check and r.returncode != 0:
+        die(f"command failed in {ws.container}: {' '.join(args)}")
+    return r.returncode
+
+
+def write_root_file(ws: Workspace, path: str, content: str) -> None:
+    exec_in(ws, ["bash", "-c", f"cat > {path} && chmod 0644 {path}"], input=content, user="root")
+
+
+def install_policy(ws: Workspace, policy: Policy) -> None:
+    """Write the resolved policy into the root-owned /etc/paddock (the agent, as
+    `node`, cannot), then (re)apply the firewall."""
+    write_root_file(ws, f"{POLICY_DIR}/mode", "open\n" if policy.open else "enforce\n")
+    write_root_file(ws, f"{POLICY_DIR}/github", "1\n" if policy.github else "0\n")
+    write_root_file(ws, f"{POLICY_DIR}/allowed-domains.txt", "".join(d + "\n" for d in policy.domains))
+    write_root_file(ws, f"{POLICY_DIR}/host-ports.txt", "".join(r + "\n" for r in policy.host_ports))
+    r = subprocess.run(["docker", "exec", "-u", CONTAINER_USER, ws.container, "sudo", "/usr/local/bin/init-firewall.sh"],
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if r.returncode != 0:
+        print(r.stdout, file=sys.stderr)
+        die("firewall could not be fully applied — the sandbox is CLOSED (DNS only). "
+            "Fix the network and run `paddock firewall`.")
+    st = load_state(ws.container); st["policy"] = policy.to_json(); save_state(ws.container, st)
+    info(f"policy: {policy.describe()}")
+
+
+def provisioned(ws: Workspace) -> bool:
+    return exec_in(ws, ["test", "-f", f"{HISTORY_DIR}/.paddock-provisioned"], check=False, quiet=True) == 0
+
+
+def provision(ws: Workspace, prof: dict, env_file_present: bool) -> None:
+    info("provisioning: volumes, git config, dependencies")
+    steps = ["sudo /usr/local/bin/init-volumes.sh",
+             "git config --global --add safe.directory '*'",
+             # sibling worktrees are not mounted and would look prunable
+             "git config --global gc.worktreePruneExpire never"]
+    pm = ws.package_manager()
+    if pm:
+        steps.append(f"corepack prepare {pm} --activate && {pm.split('@')[0]} --version >/dev/null")
+    install = prof.get("install")
+    if install == "auto":
+        install = ws.install_command()
+    if install:
+        steps.append(install)
+    if env_file_present:
+        steps.append("(test -n \"$GH_TOKEN\" && gh auth setup-git) || echo 'paddock: GH_TOKEN not set — git push / gh will not authenticate'")
+    rc = exec_in(ws, ["bash", "-euo", "pipefail", "-c", " && ".join(steps)], check=False)
+    if rc != 0:
+        die("provisioning failed (network?). Fix and run `paddock provision`")
+    if prof.get("claude_settings"):
+        settings = rewritten_settings()
+        if settings:
+            exec_in(ws, ["bash", "-c", f"test -e {CONTAINER_CLAUDE}/settings.json || cat > {CONTAINER_CLAUDE}/settings.json"], input=settings)
+            info("copied ~/.claude/settings.json into the sandbox (paths rewritten)")
+    exec_in(ws, ["touch", f"{HISTORY_DIR}/.paddock-provisioned"])
+
+
 def create_container(ws: Workspace, profile: str, prof: dict, tag: str) -> None:
     ports = assign_ports([int(p) for p in prof.get("ports", [])])
     env = render_env(prof.get("env", {}), ports)
@@ -362,13 +492,13 @@ def create_container(ws: Workspace, profile: str, prof: dict, tag: str) -> None:
            "--cap-add=NET_ADMIN", "--cap-add=NET_RAW",
            "--add-host", "host.docker.internal:host-gateway",
            "-w", str(ws.root), "-u", CONTAINER_USER,
-           "-e", "CLAUDE_CONFIG_DIR=/home/node/.claude",
+           "-e", f"CLAUDE_CONFIG_DIR={CONTAINER_CLAUDE}",
            "-e", "TURBO_CACHE_DIR=/home/node/.cache/turbo",
            "-e", "npm_config_store_dir=/home/node/.local/share/pnpm/store",
            "-e", "NODE_OPTIONS=--max-old-space-size=4096",
            "-e", f"PADDOCK_WORKSPACE={ws.root}",
            "-v", f"{ws.root}:{ws.root}",
-           "-v", f"{volume_name(ws, 'claude')}:/home/node/.claude",
+           "-v", f"{volume_name(ws, 'claude')}:{CONTAINER_CLAUDE}",
            "-v", f"{volume_name(ws, 'history')}:{HISTORY_DIR}",
            "-v", "paddock-pnpm-store:/home/node/.local/share/pnpm/store"]
     if ws.common_git:
@@ -389,74 +519,36 @@ def create_container(ws: Workspace, profile: str, prof: dict, tag: str) -> None:
     if r.returncode != 0:
         die(f"docker create failed:\n{r.stderr.strip()}")
     docker("start", ws.container)
-    # Tell init-volumes.sh which mountpoints to chown, then provision.
     exec_in(ws, ["bash", "-c", f"cat > {HISTORY_DIR}/.paddock-volume-targets"], input="".join(t + "\n" for t in targets))
-    provision(ws, prof, env_file_present=ef is not None)
+    save_state(ws.container, {"profile": profile, "env_file": str(ef) if ef else None})
     if ports:
         info("ports: " + ", ".join(f"localhost:{h} -> {c}" for c, h in ports.items()))
 
 
-def exec_in(ws: Workspace, args: List[str], tty: bool = False, input: Optional[str] = None,
-            check: bool = True, quiet: bool = False) -> int:
-    cmd = ["docker", "exec"]
-    if tty:
-        cmd.append("-it" if sys.stdin.isatty() else "-i")
-    elif input is not None:
-        cmd.append("-i")
-    cmd += ["-u", CONTAINER_USER, "-w", str(ws.root), ws.container, *args]
-    r = subprocess.run(cmd, input=input, text=True,
-                       stdout=subprocess.DEVNULL if quiet else None)
-    if check and r.returncode != 0:
-        die(f"command failed in {ws.container}: {' '.join(args)}")
-    return r.returncode
-
-
-def provision(ws: Workspace, prof: dict, env_file_present: bool) -> None:
-    info("provisioning (first start): volumes, git config, dependencies")
-    steps = ["sudo /usr/local/bin/init-volumes.sh",
-             "git config --global --add safe.directory '*'",
-             # sibling worktrees are not mounted and would look prunable
-             "git config --global gc.worktreePruneExpire never"]
-    pm = ws.package_manager()
-    if pm:
-        steps.append(f"corepack prepare {pm} --activate")
-    install = prof.get("install")
-    if install == "auto":
-        install = ws.install_command()
-    if install:
-        steps.append(install)
-    if env_file_present:
-        steps.append("(test -n \"$GH_TOKEN\" && gh auth setup-git) || echo 'paddock: GH_TOKEN not set — git push / gh will not authenticate'")
-    exec_in(ws, ["bash", "-euo", "pipefail", "-c", " && ".join(steps)])
-    if prof.get("claude_settings"):
-        settings = rewritten_settings()
-        if settings:
-            exec_in(ws, ["bash", "-c", f"test -e {CONTAINER_CLAUDE}/settings.json || cat > {CONTAINER_CLAUDE}/settings.json"], input=settings)
-            info("copied ~/.claude/settings.json into the sandbox (paths rewritten)")
-
-
-def apply_firewall(ws: Workspace) -> None:
-    exec_in(ws, ["sudo", "/usr/local/bin/init-firewall.sh"], quiet=True)
-    info("firewall applied")
-
-
-def ensure_up(ws: Workspace, profile_name: Optional[str], rebuild: bool = False) -> None:
+def ensure_up(ws: Workspace, a) -> None:
     docker_ok()
-    profile, prof, ppath = resolve_profile(ws, profile_name)
+    profile, prof, ppath = resolve_profile(ws, a.profile)
+    sets_override = getattr(a, "policies", None)
+    allow = getattr(a, "allow", None)
+    policy = resolve_policy(prof, sets_override, allow)
     state = container_state(ws.container)
     if state is None:
-        tag = ensure_image(profile, prof, force=rebuild)
+        tag = ensure_image(prof, force=getattr(a, "rebuild", False))
         info(f"creating {ws.container} (profile: {profile}{' from ' + str(ppath) if ppath else ''})")
         create_container(ws, profile, prof, tag)
-        apply_firewall(ws)
-        return
+    else:
+        _, current_hash = build_context(prof)
+        if getattr(a, "rebuild", False) or image_hash(image_tag(prof)) != current_hash:
+            info("image inputs changed since this sandbox was created — `paddock reset` then `paddock up` to pick them up")
+        if state != "running":
+            docker("start", ws.container)
+    if not provisioned(ws):
+        # Dependency installs may reach registries + GitHub even under a strict
+        # profile, but never the open internet — then the real policy applies.
+        install_policy(ws, resolve_policy(prof, sets_override, allow, plus=PROVISION_POLICIES) if not policy.open else policy)
+        provision(ws, prof, env_file_present=env_file_for(profile) is not None)
+    install_policy(ws, policy)
     labels = container_labels(ws.container)
-    _, current_hash = build_context(profile, prof)
-    if rebuild or image_hash(image_tag(profile)) != current_hash:
-        info("profile/image changed since this sandbox was created — run `paddock reset` then `paddock up` to apply")
-    if state != "running":
-        docker("start", ws.container)
-        apply_firewall(ws)
     ports = labels.get("paddock.ports") or ""
     if ports:
         info("ports: " + ", ".join(f"localhost:{p.split(':')[1]} -> {p.split(':')[0]}" for p in ports.split(",")))
@@ -476,24 +568,27 @@ def rm_container(ws: Workspace, with_volumes: bool) -> None:
     if vols:
         docker("volume", "rm", *vols)
         info("removed volumes: " + ", ".join(vols))
+    sp = state_path(ws.container)
+    if sp.is_file():
+        sp.unlink()
 
 
 # ----------------------------------------------------------------------------- commands
-def cmd_up(a):    ensure_up(Workspace(Path(a.path)), a.profile, a.rebuild)
+def cmd_up(a):    ensure_up(Workspace(Path(a.path)), a)
 
 
 def cmd_run(a):
-    ws = Workspace(Path(a.path)); ensure_up(ws, a.profile)
+    ws = Workspace(Path(a.path)); ensure_up(ws, a)
     sys.exit(exec_in(ws, ["claude", "--dangerously-skip-permissions", *a.args], tty=True, check=False))
 
 
 def cmd_shell(a):
-    ws = Workspace(Path(a.path)); ensure_up(ws, a.profile)
+    ws = Workspace(Path(a.path)); ensure_up(ws, a)
     sys.exit(exec_in(ws, ["zsh"], tty=True, check=False))
 
 
 def cmd_exec(a):
-    ws = Workspace(Path(a.path)); ensure_up(ws, a.profile)
+    ws = Workspace(Path(a.path)); ensure_up(ws, a)
     if not a.args:
         die("exec needs a command: paddock exec [PATH] -- <cmd>")
     sys.exit(exec_in(ws, a.args, tty=True, check=False))
@@ -512,20 +607,37 @@ def cmd_reset(a):  rm_container(Workspace(Path(a.path)), with_volumes=True)
 
 
 def cmd_firewall(a):
+    """Re-apply the policy to a running sandbox — loosen or tighten without restarting."""
     ws = Workspace(Path(a.path))
     if container_state(ws.container) != "running":
         die(f"{ws.container} is not running")
-    apply_firewall(ws)
+    _, prof, _ = resolve_profile(ws, a.profile)
+    install_policy(ws, resolve_policy(prof, a.policies, a.allow))
+
+
+def cmd_provision(a):
+    ws = Workspace(Path(a.path))
+    if container_state(ws.container) != "running":
+        die(f"{ws.container} is not running — `paddock up` first")
+    profile, prof, _ = resolve_profile(ws, a.profile)
+    policy = resolve_policy(prof, a.policies, a.allow)
+    install_policy(ws, resolve_policy(prof, a.policies, a.allow, plus=PROVISION_POLICIES) if not policy.open else policy)
+    provision(ws, prof, env_file_present=env_file_for(profile) is not None)
+    install_policy(ws, policy)
 
 
 def cmd_ls(a):
     rows = all_containers()
     if not rows:
         print("no sandboxes"); return
-    cols = ["SANDBOX", "STATE", "PROFILE", "PORTS", "WORKSPACE"]
-    table = [[c["name"], c["state"], c.get("paddock.profile", ""),
-              " ".join(f"{p.split(':')[1]}->{p.split(':')[0]}" for p in (c.get("paddock.ports") or "").split(",") if p),
-              c.get("paddock.workspace", "")] for c in rows]
+    cols = ["SANDBOX", "STATE", "PROFILE", "POLICY", "PORTS", "WORKSPACE"]
+    table = []
+    for c in rows:
+        st = load_state(c["name"]).get("policy") or {}
+        pol = Policy(st.get("sets", []), st.get("extra", []), st.get("host_ports", [])).describe() if st else "?"
+        table.append([c["name"], c["state"], c.get("paddock.profile", ""), pol,
+                      " ".join(f"{p.split(':')[1]}->{p.split(':')[0]}" for p in (c.get("paddock.ports") or "").split(",") if p),
+                      c.get("paddock.workspace", "")])
     widths = [max(len(str(r[i])) for r in [cols] + table) for i in range(len(cols))]
     for r in [cols] + table:
         print("  ".join(str(v).ljust(w) for v, w in zip(r, widths)).rstrip())
@@ -543,6 +655,7 @@ def cmd_init(a):
     else:
         skeleton = {
             "$comment": f"paddock profile for {ws.repo} — detected from {ws.root}",
+            "policies": ["github", "npm"],
             "domains": [], "host_ports": [], "ports": [], "env": {},
             "install": "auto", "node_modules": "auto", "volumes": [],
         }
@@ -560,25 +673,29 @@ def main(argv: List[str]) -> None:
     p = argparse.ArgumentParser(prog="paddock", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    def add(name: str, fn, help: str, path: bool = True, profile: bool = True, args: bool = False):
+    def add(name: str, fn, help: str, path: bool = True, profile: bool = True, policy: bool = False, args: bool = False):
         s = sub.add_parser(name, help=help)
         if path:
             s.add_argument("path", nargs="?", default=".", help="workspace directory (default: cwd)")
         if profile:
             s.add_argument("--profile", "-p", help="profile name (default: repo directory name)")
+        if policy:
+            s.add_argument("--policies", help="comma-separated policy sets, replacing the profile's (e.g. github,npm; '' = strict; open = no firewall)")
+            s.add_argument("--allow", help="comma-separated extra domains for this start")
         if args:
             s.add_argument("args", nargs=argparse.REMAINDER, help="arguments after --")
         s.set_defaults(fn=fn)
         return s
 
-    add("up", cmd_up, "build image if needed, create/start the sandbox").add_argument("--rebuild", action="store_true", help="rebuild the image without cache")
-    add("run", cmd_run, "up + `claude --dangerously-skip-permissions [args]`", args=True)
-    add("shell", cmd_shell, "up + zsh inside the sandbox")
-    add("exec", cmd_exec, "up + run a command inside: paddock exec [PATH] -- <cmd>", args=True)
+    add("up", cmd_up, "build image if needed, create/start the sandbox", policy=True).add_argument("--rebuild", action="store_true", help="rebuild the image without cache")
+    add("run", cmd_run, "up + `claude --dangerously-skip-permissions [args]`", policy=True, args=True)
+    add("shell", cmd_shell, "up + zsh inside the sandbox", policy=True)
+    add("exec", cmd_exec, "up + run a command inside: paddock exec [PATH] -- <cmd>", policy=True, args=True)
+    add("firewall", cmd_firewall, "re-apply egress policy to a running sandbox (loosen/tighten live)", policy=True)
+    add("provision", cmd_provision, "re-run first-start provisioning (deps install etc.)", policy=True)
     add("stop", cmd_stop, "stop the sandbox", profile=False)
     add("rm", cmd_rm, "remove the sandbox container (keeps its volumes)", profile=False)
     add("reset", cmd_reset, "remove the sandbox container AND its volumes (node_modules, Claude login)", profile=False)
-    add("firewall", cmd_firewall, "re-apply the egress firewall", profile=False)
     add("ls", cmd_ls, "list sandboxes", path=False, profile=False)
     add("init", cmd_init, "write a profile + secrets skeleton for this repo").add_argument("--force", action="store_true")
 

@@ -2,6 +2,10 @@
   "$comment": "Base profile. Every other profile is merged on top of this one.",
   "node": "22",
   "claude_version": "latest",
+  "policies": [
+    "github",
+    "npm"
+  ],
   "domains": [],
   "host_ports": [],
   "ports": [],

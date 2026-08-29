@@ -1,0 +1,3 @@
+# JavaScript package registries (npm, pnpm, yarn, corepack).
+registry.npmjs.org
+registry.yarnpkg.com

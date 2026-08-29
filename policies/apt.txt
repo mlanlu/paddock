@@ -1,0 +1,3 @@
+# Debian package repositories (apt-get inside the sandbox).
+deb.debian.org
+security.debian.org
