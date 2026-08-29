@@ -499,9 +499,14 @@ def provision(ws: Workspace, prof: dict, env_file_present: bool) -> None:
         install = ws.install_command()
     if install:
         steps.append(install)
+        if ws.node_modules_dirs():
+            steps.append("test -n \"$(ls -A node_modules)\" || { echo 'paddock: install left node_modules empty'; exit 1; }")
     if env_file_present:
-        steps.append("(test -n \"$GH_TOKEN\" && gh auth setup-git) || echo 'paddock: GH_TOKEN not set — git push / gh will not authenticate'")
-    rc = exec_in(ws, ["bash", "-euo", "pipefail", "-c", " && ".join(steps)], check=False)
+        # `if`, not `A && B || echo`: an `|| echo` at the end of an && chain
+        # would turn any earlier failure into exit 0.
+        steps.append("if [ -n \"$GH_TOKEN\" ]; then gh auth setup-git; else echo 'paddock: GH_TOKEN not set — git push / gh will not authenticate'; fi")
+    script = "set -euo pipefail\n" + "\n".join(steps) + "\n"
+    rc = exec_in(ws, ["bash", "-c", script], check=False)
     if rc != 0:
         die("provisioning failed (network?). Fix and run `paddock provision`")
     if prof.get("claude_settings"):
