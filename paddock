@@ -263,13 +263,13 @@ def load_state(container: str) -> dict:
 # ----------------------------------------------------------------------------- image
 def build_context(prof: dict) -> Tuple[Path, str]:
     """Docker build context (image files only; policy is applied at start)."""
-    ctx = CACHE_DIR / "build"
+    ctx = CACHE_DIR / "build" / "sandbox"
     ctx.mkdir(parents=True, exist_ok=True)
-    for f in ("Dockerfile", "init-firewall.sh", "init-volumes.sh"):
-        shutil.copy2(IMAGE_DIR / f, ctx / f)
+    files = ("Dockerfile", "init-firewall.sh", "init-volumes.sh")
     h = hashlib.sha256()
-    for f in sorted(ctx.iterdir()):
-        h.update(f.name.encode()); h.update(f.read_bytes())
+    for f in files:
+        shutil.copy2(IMAGE_DIR / f, ctx / f)
+        h.update(f.encode()); h.update((ctx / f).read_bytes())
     for k in ("node", "claude_version"):
         h.update(f"{k}={prof.get(k)}".encode())
     return ctx, h.hexdigest()[:16]
