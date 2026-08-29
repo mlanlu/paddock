@@ -68,14 +68,18 @@ ipset flush allowed-domains
 iptables -A OUTPUT -m set --match-set allowed-domains dst -j ACCEPT
 iptables -A OUTPUT -j REJECT --reject-with icmp-admin-prohibited
 
-resolve_into_set() {  # $1 = hostname; returns 1 if it did not resolve
-    local ips ip
-    ips=$(dig +noall +answer +time=3 +tries=2 A "$1" | awk '$4 == "A" {print $5}')
+RESOLVED=""
+resolve_into_set() {  # $1 = hostname; returns 1 if it did not resolve. Sets RESOLVED.
+    local ips ip i
+    # Round-robin / CDN hosts answer differently per query: ask a few times and
+    # keep the union, so a later lookup by the client still lands in the set.
+    ips=$(for i in 1 2 3; do dig +noall +answer +time=3 +tries=2 A "$1" | awk '$4 == "A" {print $5}'; done | sort -u)
     [ -n "$ips" ] || return 1
     while read -r ip; do
         [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || { echo "ERROR: bad IP for $1: $ip"; exit 1; }
         ipset add allowed-domains "$ip" -exist
     done < <(echo "$ips")
+    RESOLVED="$ips"
 }
 
 # 2. Populate the allowlist.
@@ -83,7 +87,8 @@ if [ "$(cat "$P/github" 2>/dev/null)" = "1" ]; then
     # We are already closed, so allow api.github.com itself before asking it
     # for the ranges (it is inside those ranges anyway).
     resolve_into_set api.github.com || { echo "ERROR: could not resolve api.github.com (network?) — sandbox stays closed"; exit 1; }
-    gh_ranges=$(curl -s --connect-timeout 10 https://api.github.com/meta || true)
+    # Pin curl to an IP we just allowed (the client may otherwise get a different A record).
+    gh_ranges=$(curl -s --connect-timeout 10 --resolve "api.github.com:443:$(echo "$RESOLVED" | head -1)" https://api.github.com/meta || true)
     if [ -z "$gh_ranges" ] || ! echo "$gh_ranges" | jq -e '.web and .api and .git' >/dev/null 2>&1; then
         echo "ERROR: could not fetch GitHub IP ranges (network?) — sandbox stays closed"; exit 1
     fi
