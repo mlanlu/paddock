@@ -1,0 +1,11 @@
+{
+  "$comment": "github.com/mlanlu/openmatch — Next.js + Hono + Supabase pnpm monorepo. Supabase runs on the host.",
+  "domains": ["fonts.googleapis.com", "fonts.gstatic.com"],
+  "host_ports": ["54321:54329"],
+  "ports": [3000, 3001],
+  "env": {
+    "SUPABASE_URL": "http://${host}:54321",
+    "NEXT_PUBLIC_SUPABASE_URL": "http://localhost:54321",
+    "NEXT_PUBLIC_API_URL": "http://localhost:${port:3001}"
+  }
+}

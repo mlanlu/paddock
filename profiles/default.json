@@ -1,0 +1,19 @@
+{
+  "$comment": "Base profile. Every other profile is merged on top of this one.",
+  "node": "22",
+  "claude_version": "latest",
+  "domains": [],
+  "host_ports": [],
+  "ports": [],
+  "env": {},
+  "install": "auto",
+  "node_modules": "auto",
+  "volumes": [],
+  "mounts": [],
+  "claude_dirs": [
+    "skills",
+    "agents",
+    "commands"
+  ],
+  "claude_settings": true
+}
