@@ -98,8 +98,9 @@ not alter when paddock fails, only what it reports.
 `provisioned()` checked `/commandhistory/.paddock-provisioned`, but
 `/commandhistory` is a volume that `paddock rm` deliberately keeps, while most
 of what `provision()` does — `safe.directory`, `gc.worktreePruneExpire`,
-corepack activation, the `settings.json` copy — lives in the container
-filesystem. So `paddock rm` followed by `paddock up` produced a container that
+corepack activation — lives in the container filesystem. (The `settings.json`
+copy goes to the `claude` volume and survives `rm`, like the old marker did.)
+So `paddock rm` followed by `paddock up` produced a container that
 reported itself provisioned and was not.
 
 Found in this repo's own sandbox: the marker was present, `~/.gitconfig` was
