@@ -7,15 +7,16 @@
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
-    <main id="app">
+    <main>
       <header>
         <h1>paddock</h1>
+        <span id="cli" class="muted"></span>
         <button id="pick" type="button">Open folder…</button>
       </header>
       <section id="sandboxes" aria-live="polite"></section>
       <section id="log-panel" hidden>
-        <div id="log-head"></div>
-        <pre id="log" tabindex="0"></pre>
+        <div id="log-head" class="muted"></div>
+        <pre id="log" tabindex="0" aria-live="polite"></pre>
       </section>
     </main>
     <script type="module" src="/src/main.ts"></script>

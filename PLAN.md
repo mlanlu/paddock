@@ -187,12 +187,15 @@ framework-agnostic. A window that opens and builds is the deliverable.
   passes, and `app/README.md` says how to build.
 - Verify: `cargo check` in the sandbox; `npm run tauri dev` **on the host —
   needs macOS.**
-- 2026-09-09. Observed: `npx tsc --noEmit` clean and `npx vite build` produced
-  `dist/` (58ms) inside the sandbox. Vite was upgraded 5 → 8 during scaffolding
-  because `npm audit` flagged the esbuild dev-server advisory
-  (GHSA-67mh-4wv8-2f99); now `found 0 vulnerabilities`. A dev server any website
-  can talk to is not something this repo ships. **Not yet observed:** the window
-  opening, and `cargo check` — see the Rust status note below.
+- 2026-09-09. Observed: `npx tsc --noEmit` clean, `npx vite build` produced
+  `dist/`, `npm audit` reports 0 vulnerabilities. Vite landed on 7, via a
+  detour worth recording: 5 was flagged by `npm audit` for the esbuild
+  dev-server advisory (GHSA-67mh-4wv8-2f99 — any website can talk to the dev
+  server, which is not something this repo ships), so it went to 8, whose
+  rolldown backend then failed to load its native binding on linux-arm64. 7
+  fixes the advisory on the rollup backend with no native binary, so it is the
+  version that works on both the agent's Linux sandbox and the macOS host.
+  **Not yet observed:** the window opening — needs macOS.
 
 ### WP-M1-2 — binary resolution · Ask · `REVIEW`
 
@@ -215,7 +218,7 @@ shell must be the user's own — a resolver that can be pointed at an attacker's
   the one work package that is fully verifiable from inside a sandbox, which is
   why it is worth isolating.
 
-### WP-M1-3 — sandbox list from `ls --json` · Show · `WIP`
+### WP-M1-3 — sandbox list from `ls --json` · Show · `REVIEW`
 
 Typed Rust structs over the WP-M0-1 contract in `docs/cli-json.md`, rendered as
 the app's main table: container, state, repo, profile, policy, ports.
@@ -230,7 +233,7 @@ here looks like a broken sandbox to the user.
 - Verify: `cargo test` against fixtures captured from the real CLI. Live run
   **needs Docker.**
 
-### WP-M1-4 — folder picker and `info` preview · Show · `TODO`
+### WP-M1-4 — folder picker and `info` preview · Show · `REVIEW`
 
 Native folder picker, then `paddock info PATH --json` (WP-M0-2 — no side
 effects) to show what *will* happen before anything runs: which profile
@@ -241,7 +244,7 @@ resolves, which policy sets, whether a container already exists.
   starting anything.
 - Verify: **needs Docker and macOS.**
 
-### WP-M1-5 — streamed `paddock up` · Show · `WIP`
+### WP-M1-5 — streamed `paddock up` · Show · `REVIEW`
 
 The spawn → stream → render chain. `paddock up` spawned with piped stdout and
 stderr, lines pushed to the frontend as Tauri events, rendered into a log panel.
@@ -257,7 +260,7 @@ code, not "it failed".
 - Verify: run `up` on a cold sandbox and watch the image build stream.
   **Needs Docker.**
 
-### WP-M1-6 — stop, rm, reset · Show · `TODO`
+### WP-M1-6 — stop, rm, reset · Show · `REVIEW`
 
 The three lifecycle buttons, reusing WP-M1-5's streaming.
 
@@ -273,12 +276,16 @@ confirmation naming what is lost. `rm` keeps them and does not.
 
 Written for whoever picks this up next; delete it when M1 closes.
 
-**Done and committed.** `app/` scaffolded: TypeScript + Vite frontend (builds
-clean), and a two-crate cargo workspace under `app/src-tauri` — `paddock-core`
-(no `tauri` dependency, all the logic, ~30 unit tests) and the Tauri shell over
-it. `core/` covers binary resolution (WP-M1-2), the `ls`/`info` contract types
-(WP-M1-3), the exit-code model, and process streaming (WP-M1-5). The frontend
-for 3, 4 and 6 is still the placeholder in `app/src/main.ts`.
+**Done and committed.** All six work packages are code-complete and at
+`REVIEW`. `app/src-tauri` is a two-crate workspace: `paddock-core` (no `tauri`
+dependency, 31 unit tests) and the Tauri shell over it. The frontend is
+TypeScript with no framework — `src/api.ts` mirrors the Rust commands,
+`src/main.ts` has the list, the picker with its `info` preview, the streamed log
+panel and the lifecycle buttons.
+
+None of it has been seen running. Every remaining verification step needs
+Docker or macOS, neither of which exists in the sandbox — the per-package
+`Verify` lines say which.
 
 **Verification status, precisely.** `paddock-core` is compiled and green:
 `cargo test -p paddock-core` → 31 passed, `cargo clippy -p paddock-core
