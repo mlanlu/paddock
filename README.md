@@ -123,6 +123,7 @@ paddock rm      [PATH]                            remove container, keep volumes
 paddock reset   [PATH]                            remove container + volumes (node_modules, Claude login)
 paddock firewall [PATH] [--policies ..] [--allow ..]   re-apply egress policy to a running sandbox
 paddock provision [PATH]                          re-run first-start provisioning (deps install)
+paddock info    [PATH] [-p PROFILE] [--json]      resolve a path: repo, container, profile, state; changes nothing
 paddock init    [PATH] [-p PROFILE] [--force]     write profile + env skeleton
 ```
 

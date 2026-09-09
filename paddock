@@ -720,6 +720,36 @@ def cmd_ls(a):
         print("  ".join(str(v).ljust(w) for v, w in zip(r, widths)).rstrip())
 
 
+def cmd_info(a):
+    """Resolve a path the way `up` would, without touching anything."""
+    docker_ok()
+    ws = Workspace(Path(a.path))
+    profile, prof, ppath = resolve_profile(ws, a.profile)
+    policy = resolve_policy(prof, None, None)
+    state = container_state(ws.container)
+    if state is None:
+        ports = [{"host": h, "container": c} for c, h in assign_ports([int(p) for p in prof.get("ports", [])]).items()]
+    else:
+        ports = [{"host": int(pair.split(":")[1]), "container": int(pair.split(":")[0])}
+                 for pair in (container_labels(ws.container).get("paddock.ports") or "").split(",") if pair]
+    ef = env_file_for(profile)
+    out = {"root": str(ws.root), "repo": ws.repo, "name": ws.name, "container": ws.container,
+           "common_git": str(ws.common_git) if ws.common_git else None,
+           "profile": profile, "profile_path": str(ppath) if ppath else None,
+           "env_file": str(ef) if ef else None,
+           "state": state, "provisioned": provisioned(ws) if state == "running" else None,
+           "ports": ports,
+           "policy": {"sets": policy.sets, "extra": policy.extra, "describe": policy.describe()}}
+    if a.json:
+        print(json.dumps(out, indent=2)); return
+    for k, v in out.items():
+        if k == "ports":
+            v = " ".join(f"{p['host']}->{p['container']}" for p in v)
+        elif k == "policy":
+            v = v["describe"]
+        print(f"{k}: {v}")
+
+
 def cmd_init(a):
     ws = Workspace(Path(a.path))
     name = a.profile or ws.repo
@@ -774,6 +804,7 @@ def main(argv: List[str]) -> None:
     add("rm", cmd_rm, "remove the sandbox container (keeps its volumes)", profile=False)
     add("reset", cmd_reset, "remove the sandbox container AND its volumes (node_modules, Claude login)", profile=False)
     add("ls", cmd_ls, "list sandboxes", path=False, profile=False).add_argument("--json", action="store_true", help="machine-readable output (see docs/cli-json.md)")
+    add("info", cmd_info, "resolve a path: repo, container, profile, state — changes nothing").add_argument("--json", action="store_true", help="machine-readable output (see docs/cli-json.md)")
     add("init", cmd_init, "write a profile + secrets skeleton for this repo").add_argument("--force", action="store_true")
 
     a = p.parse_args(argv)
