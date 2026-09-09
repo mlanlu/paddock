@@ -85,3 +85,21 @@ no profile. It needs the Docker daemon, to look up the container.
 | `provisioned` | Whether first-start provisioning has run. Only knowable for a running container (it is a `docker exec`); `null` otherwise. |
 | `ports` | Published port pairs, as in `ls`. For an existing container, the actual mapping; otherwise the mapping `up` would assign right now, which may differ by the time `up` runs. |
 | `policy` | The profile's egress policy, as `up` applies it on a fresh start. `--policies`/`--allow` are not consulted; a running sandbox may carry a different live policy, which `ls --json` reports. |
+
+## Exit codes
+
+Every command exits `0` on success. Failures the app wants to react to
+differently get their own code; everything else is `1`.
+
+| Code | Meaning | What a caller can do |
+|---|---|---|
+| `1` | Any other failure. The message on stderr says what. | Show the message. |
+| `2` | Usage error: unknown command or flag, `exec` without a command. argparse owns this code. | Bug in the caller. |
+| `3` | Docker is not on `PATH` or the daemon is not running. Every command except `init` checks this first. | Offer to start Docker Desktop. |
+| `4` | Configuration missing or wrong: a `--profile` that does not exist, a policy set named by the profile or `--policies` that does not exist, invalid JSON in a profile, a bad `${…}` template in its `env`, or a `mounts` source that does not exist. | Offer `paddock init` or open the config directory. |
+| `5` | Provisioning failed (dependency install, corepack, …). The sandbox is running on the **provisioning** policy, which is the profile policy widened by `npm` and `github`, and stays that way until `paddock provision` succeeds. | Offer `paddock provision` after the network is fixed; show the sandbox as wider than its profile until then. |
+| `6` | The policy could not be fully applied and the sandbox is CLOSED: either the firewall script failed and egress is DNS only, or GitHub's IP ranges could not be fetched and the firewall was applied without them. `ls --json` reports `closed: true`. | Offer `paddock firewall` once the network is back. |
+| `7` | The command needs a running sandbox (`firewall`, `provision`) and there is none. | Offer `paddock up`. |
+
+`run`, `shell` and `exec` exit with the exit code of the command they ran
+inside the sandbox once it is up. A failure *before* that uses the codes above.

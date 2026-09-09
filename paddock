@@ -43,6 +43,11 @@ PROVISION_POLICIES = ["npm", "github"]  # what dependency installs may reach, on
 
 
 # ----------------------------------------------------------------------------- util
+# Exit codes a caller can act on; 1 is everything else. They start at 3 because
+# argparse exits 2 on a usage error and that must stay distinguishable.
+EXIT_DOCKER, EXIT_CONFIG, EXIT_PROVISION, EXIT_CLOSED, EXIT_NOT_RUNNING = 3, 4, 5, 6, 7
+
+
 def die(msg: str, code: int = 1) -> "NoReturn":  # type: ignore[name-defined]
     print(f"paddock: {msg}", file=sys.stderr)
     sys.exit(code)
@@ -64,9 +69,9 @@ def docker(*args: str, check: bool = True, capture: bool = True) -> subprocess.C
 
 def docker_ok() -> None:
     if shutil.which("docker") is None:
-        die("docker not found on PATH")
+        die("docker not found on PATH", EXIT_DOCKER)
     if docker("info", check=False).returncode != 0:
-        die("docker daemon is not running")
+        die("docker daemon is not running", EXIT_DOCKER)
 
 
 def git(cwd: Path, *args: str) -> Optional[str]:
@@ -174,11 +179,11 @@ class Workspace:
 
 
 # ----------------------------------------------------------------------------- profiles & policy
-def load_json(p: Path) -> dict:
+def load_json(p: Path, code: int = 1) -> dict:
     try:
         return json.loads(p.read_text())
     except json.JSONDecodeError as e:
-        die(f"invalid JSON in {p}: {e}")
+        die(f"invalid JSON in {p}: {e}", code)
 
 
 def find_in_config(kind: str, name: str, ext: str) -> Optional[Path]:
@@ -193,15 +198,15 @@ def find_profile(name: str) -> Optional[Path]:
 
 
 def resolve_profile(ws: Workspace, explicit: Optional[str]) -> Tuple[str, dict, Optional[Path]]:
-    base = load_json(PADDOCK_DIR / "profiles" / "default.json")
+    base = load_json(PADDOCK_DIR / "profiles" / "default.json", EXIT_CONFIG)
     name = explicit or ws.repo
     path = find_profile(name)
     if explicit and path is None:
-        die(f"profile '{explicit}' not found in {CONFIG_DIR / 'profiles'} or {PADDOCK_DIR / 'profiles'}")
+        die(f"profile '{explicit}' not found in {CONFIG_DIR / 'profiles'} or {PADDOCK_DIR / 'profiles'}", EXIT_CONFIG)
     if path is None:
         return "default", base, None
     merged = dict(base)
-    merged.update(load_json(path))
+    merged.update(load_json(path, EXIT_CONFIG))
     return name, merged, path
 
 
@@ -223,7 +228,7 @@ class Policy:
         for name in ["claude"] + [s for s in self.sets if s != "open"]:
             path = find_in_config("policies", name, ".txt")
             if path is None:
-                die(f"policy set '{name}' not found in {CONFIG_DIR / 'policies'} or {PADDOCK_DIR / 'policies'}")
+                die(f"policy set '{name}' not found in {CONFIG_DIR / 'policies'} or {PADDOCK_DIR / 'policies'}", EXIT_CONFIG)
             for entry in read_lines(path):
                 if entry == "@github-ranges":
                     self.github = True
@@ -254,9 +259,10 @@ def resolve_policy(prof: dict, sets_override: Optional[str], allow: Optional[str
 GITHUB_META_TTL = 24 * 3600
 
 
-def github_ranges() -> List[str]:
+def github_ranges() -> Optional[List[str]]:
     """GitHub's published IPv4 CIDRs, fetched on the HOST (which has network
-    even when Docker Desktop's VM does not) and cached for a day."""
+    even when Docker Desktop's VM does not) and cached for a day. None when
+    neither the fetch nor the cache is available."""
     cache = CACHE_DIR / "github-meta.json"
     data = None
     if cache.is_file() and time.time() - cache.stat().st_mtime < GITHUB_META_TTL:
@@ -272,7 +278,8 @@ def github_ranges() -> List[str]:
                 info(f"could not refresh GitHub IP ranges ({e}); using cached copy")
                 data = load_json(cache)
             else:
-                die(f"could not fetch GitHub IP ranges from api.github.com on the host: {e}")
+                info(f"could not fetch GitHub IP ranges from api.github.com on the host: {e}")
+                return None
     cidrs = []
     for key in ("web", "api", "git"):
         for c in data.get(key, []):
@@ -398,9 +405,9 @@ def render_env(env: Dict[str, str], ports: Dict[int, int]) -> Dict[str, str]:
         if key.startswith("port:"):
             p = int(key.split(":", 1)[1])
             if p not in ports:
-                die(f"env references ${{port:{p}}} but {p} is not in the profile's `ports`")
+                die(f"env references ${{port:{p}}} but {p} is not in the profile's `ports`", EXIT_CONFIG)
             return str(ports[p])
-        die(f"unknown template ${{{key}}} in profile env")
+        die(f"unknown template ${{{key}}} in profile env", EXIT_CONFIG)
     return {k: re.sub(r"\$\{([^}]+)\}", sub, str(v)) for k, v in env.items()}
 
 
@@ -422,7 +429,7 @@ def extra_mounts(prof: dict) -> List[str]:
         parts = str(spec).split(":")
         src = Path(os.path.expanduser(parts[0])).resolve()
         if not src.exists():
-            die(f"mounts: {src} does not exist")
+            die(f"mounts: {src} does not exist", EXIT_CONFIG)
         mode = "ro"
         dst = str(src)
         rest = parts[1:]
@@ -467,21 +474,26 @@ def write_root_file(ws: Workspace, path: str, content: str) -> None:
 def install_policy(ws: Workspace, policy: Policy) -> None:
     """Write the resolved policy into the root-owned /etc/paddock (the agent, as
     `node`, cannot), then (re)apply the firewall."""
+    # Fetched before anything is written and the firewall runs regardless: a
+    # fresh container has no rules at all until this script has run once.
+    ranges = github_ranges() if policy.github else []
     write_root_file(ws, f"{POLICY_DIR}/mode", "open\n" if policy.open else "enforce\n")
-    write_root_file(ws, f"{POLICY_DIR}/github-ranges.txt",
-                    "".join(c + "\n" for c in github_ranges()) if policy.github else "")
+    write_root_file(ws, f"{POLICY_DIR}/github-ranges.txt", "".join(c + "\n" for c in ranges or []))
     write_root_file(ws, f"{POLICY_DIR}/allowed-domains.txt", "".join(d + "\n" for d in policy.domains))
     write_root_file(ws, f"{POLICY_DIR}/host-ports.txt", "".join(r + "\n" for r in policy.host_ports))
     r = subprocess.run(["docker", "exec", "-u", CONTAINER_USER, ws.container, "sudo", "/usr/local/bin/init-firewall.sh"],
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     st = load_state(ws.container)
     st["policy"] = policy.to_json()
-    st["closed"] = r.returncode != 0
+    st["closed"] = r.returncode != 0 or ranges is None
     save_state(ws.container, st)
     if r.returncode != 0:
         print(r.stdout, file=sys.stderr)
         die("firewall could not be fully applied — the sandbox is CLOSED (DNS only). "
-            "Fix the network and run `paddock firewall`.")
+            "Fix the network and run `paddock firewall`.", EXIT_CLOSED)
+    if ranges is None:
+        die("firewall applied without GitHub (ranges unavailable) — the sandbox is CLOSED to GitHub. "
+            "Fix the network and run `paddock firewall`.", EXIT_CLOSED)
     info(f"policy: {policy.describe()} — {r.stdout.strip().splitlines()[-1] if r.stdout.strip() else 'applied'}")
 
 
@@ -512,7 +524,7 @@ def provision(ws: Workspace, prof: dict, env_file_present: bool) -> None:
     script = "set -euo pipefail\n" + "\n".join(steps) + "\n"
     rc = exec_in(ws, ["bash", "-c", script], check=False)
     if rc != 0:
-        die("provisioning failed (network?). Fix and run `paddock provision`")
+        die("provisioning failed (network?). Fix and run `paddock provision`", EXIT_PROVISION)
     if prof.get("claude_settings"):
         settings = rewritten_settings()
         if settings:
@@ -571,7 +583,6 @@ def create_container(ws: Workspace, profile: str, prof: dict, tag: str) -> None:
 
 
 def ensure_up(ws: Workspace, a) -> None:
-    docker_ok()
     profile, prof, ppath = resolve_profile(ws, a.profile)
     sets_override = getattr(a, "policies", None)
     allow = getattr(a, "allow", None)
@@ -645,9 +656,9 @@ def cmd_shell(a):
 
 
 def cmd_exec(a):
-    ws = Workspace(Path(a.path)); ensure_up(ws, a)
     if not a.args:
-        die("exec needs a command: paddock exec [PATH] -- <cmd>")
+        die("exec needs a command: paddock exec [PATH] -- <cmd>", 2)
+    ws = Workspace(Path(a.path)); ensure_up(ws, a)
     sys.exit(exec_in(ws, a.args, tty=True, check=False))
 
 
@@ -667,7 +678,7 @@ def cmd_firewall(a):
     """Re-apply the policy to a running sandbox — loosen or tighten without restarting."""
     ws = Workspace(Path(a.path))
     if container_state(ws.container) != "running":
-        die(f"{ws.container} is not running")
+        die(f"{ws.container} is not running", EXIT_NOT_RUNNING)
     _, prof, _ = resolve_profile(ws, a.profile)
     install_policy(ws, resolve_policy(prof, a.policies, a.allow))
 
@@ -675,7 +686,7 @@ def cmd_firewall(a):
 def cmd_provision(a):
     ws = Workspace(Path(a.path))
     if container_state(ws.container) != "running":
-        die(f"{ws.container} is not running — `paddock up` first")
+        die(f"{ws.container} is not running — `paddock up` first", EXIT_NOT_RUNNING)
     profile, prof, _ = resolve_profile(ws, a.profile)
     policy = resolve_policy(prof, a.policies, a.allow)
     install_policy(ws, resolve_policy(prof, a.policies, a.allow, plus=PROVISION_POLICIES) if not policy.open else policy)
@@ -722,7 +733,6 @@ def cmd_ls(a):
 
 def cmd_info(a):
     """Resolve a path the way `up` would, without touching anything."""
-    docker_ok()
     ws = Workspace(Path(a.path))
     profile, prof, ppath = resolve_profile(ws, a.profile)
     policy = resolve_policy(prof, None, None)
@@ -810,6 +820,8 @@ def main(argv: List[str]) -> None:
     a = p.parse_args(argv)
     if getattr(a, "args", None) and a.args[0] == "--":
         a.args = a.args[1:]
+    if a.cmd != "init":
+        docker_ok()
     a.fn(a)
 
 

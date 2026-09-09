@@ -127,7 +127,7 @@ paddock info    [PATH] [-p PROFILE] [--json]      resolve a path: repo, containe
 paddock init    [PATH] [-p PROFILE] [--force]     write profile + env skeleton
 ```
 
-`PATH` defaults to the current directory; any directory inside a checkout works. `--json` shapes are documented in [`docs/cli-json.md`](docs/cli-json.md).
+`PATH` defaults to the current directory; any directory inside a checkout works. `--json` shapes and exit codes are documented in [`docs/cli-json.md`](docs/cli-json.md).
 
 ## How it works
 
