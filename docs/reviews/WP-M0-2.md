@@ -31,3 +31,11 @@ gone inside a running container) is not one anybody has hit.
 
 **F6** nit — human output prints `None`/`True`.
 → **Declined.** It is a debugging aid; the app reads `--json`.
+
+## Decision review — opus, 2026-09-09
+
+No decline wrong. **D1**: the F2 doc sentence claimed the label and resolved
+profile differ only on `-p`; they also differ after `paddock init` on a repo
+that already had a sandbox, or after a profile file is removed.
+→ **Acted.** Sentence corrected. Also noted a pre-existing container-name
+collision (two clones with the same basename) as PLAN.md open question 6.

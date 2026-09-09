@@ -80,7 +80,7 @@ profile lookup, which needs no Docker.
 | `name` | Basename of `root`. Equals `repo` unless this is a linked worktree or a differently named clone. |
 | `container` | The container name `up` would use. |
 | `common_git` | Absolute path of the shared `.git` when `root` is a linked worktree, else `null`. |
-| `profile` | Profile name a fresh start would use: `--profile`, else `repo`, else `default`. An existing container keeps the profile it was created with, which `ls --json` reports; the two differ only if it was created with a different `-p`. |
+| `profile` | Profile name a fresh start would use: `--profile`, else `repo`, else `default`. An existing container keeps the profile it was created with, which `ls --json` reports; the two differ whenever the profile files or `-p` changed since it was created — including right after `paddock init` on a repo that already had a sandbox. |
 | `profile_path` | File the profile was read from, or `null` when only `profiles/default.json` applies. `null` is the cue to offer `paddock init`. |
 | `env_file` | `~/.config/paddock/env/<profile>.env` if it exists, else `null`. Like `profile`, this is what a fresh start would use; an existing container's environment was fixed when it was created. |
 | `state` | Docker's state string for the container, or `null` when it does not exist. |

@@ -204,7 +204,13 @@ release.
 5. **Test infrastructure.** No tests exist, and most paths need a running Docker
    daemon. Revisit when the JSON contracts have a real consumer; until then it
    is scaffolding for one caller.
-6. **Splitting `paddock-dev`.** `AGENTS.md` is both the always-on guidance and,
+6. **Container name collisions.** Containers are addressed by name only, and
+   `ensure_up` reuses any container with that name without checking its
+   `paddock.workspace` label. Two clones with the same repo and directory
+   basename under different parents collide; `info` then reports the other
+   workspace's state. Pre-existing; surfaced in the WP-M0-2 decision review.
+   Fix when someone hits it — probably `die` on a label mismatch.
+7. **Splitting `paddock-dev`.** `AGENTS.md` is both the always-on guidance and,
    via symlink, the `paddock-dev` skill — so invoking the skill re-loads text
    Claude already has. Harmless at 226 lines, and with one skill in existence
    any split would be guesswork. **Revisit when the product skill lands:** if
