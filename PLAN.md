@@ -325,6 +325,75 @@ quitting the app leaves the agent running and "open in Terminal" attaches the
 same session instead of a rival one. The image already carries tmux and
 `image/tmux.conf`.
 
+### WP-M2-1 — `paddock run` attaches a durable tmux session · Show · `TODO`
+
+The hinge. `cmd_run` currently `docker exec`s `claude` directly, so the agent
+dies with the client. It should instead run
+`tmux new-session -A -s <session> claude --dangerously-skip-permissions …`,
+which attaches to the session if it exists and creates it if it does not.
+
+This has to live in the **CLI**, not the app. If only the app knew about tmux,
+a human's `paddock run` would start a rival non-tmux session and D5's whole
+point — "open in Terminal" attaching *the same* session — would be lost. One
+container is one workspace, so a fixed session name inside it is enough.
+
+Known trap, to be handled rather than discovered: with `-A`, when the session
+already exists tmux **ignores the command and its arguments**. So
+`paddock run -- --model X` against a live session silently drops the flag. Say
+so, rather than pretending it applied.
+
+- Touches: `paddock` (`cmd_run`), `README.md`, `image/tmux.conf` if it needs
+  adjusting.
+- Done when: quitting the client leaves the agent running; a second `paddock
+  run` re-attaches with scrollback intact; passing arguments to an existing
+  session warns instead of silently dropping them.
+- Verify: `paddock run`, detach, confirm `claude` still runs, re-attach.
+  **Needs Docker, and needs the image rebuilt with tmux (HOST-TASKS.md task 3).**
+
+### WP-M2-2 — PTY transport · Show · `TODO`
+
+`portable-pty` spawning `paddock run` with a real PTY, bytes streamed to the
+frontend and keystrokes back. Bytes, not lines: WP-M1-5's line-oriented
+streaming is right for a log and wrong for a terminal, where partial writes and
+escape sequences must not be buffered until a newline arrives.
+
+- Touches: `app/src-tauri/core/src/pty.rs` (new), `app/src-tauri/src/lib.rs`.
+- Done when: a shell inside the sandbox is usable through the app.
+- Verify: `cargo test -p paddock-core` for the framing; live use **needs Docker
+  and macOS.**
+
+### WP-M2-3 — xterm.js with the webgl addon · Show · `TODO`
+
+Claude streams fast enough that the DOM renderer stutters, which is the reason
+the addon is not optional here. Falls back to the canvas renderer when WebGL is
+unavailable rather than failing to render.
+
+- Touches: `app/src/terminal.ts` (new), `app/package.json`.
+- Done when: a full agent response renders without visible tearing.
+- Verify: **needs macOS.**
+
+### WP-M2-4 — resize · Show · `TODO`
+
+Window resize → `fit` addon → PTY `SIGWINCH`. Both halves are needed: xterm
+reflowing without telling the PTY leaves the agent rendering to the old width,
+which is how a full-width TUI ends up drawing over itself.
+
+- Touches: `app/src/terminal.ts`, `app/src-tauri/core/src/pty.rs`.
+- Done when: resizing the window reflows Claude's UI correctly, including after
+  a detach and re-attach.
+- Verify: **needs macOS.**
+
+### WP-M2-5 — tabs and "open in Terminal" · Show · `TODO`
+
+One tab per sandbox, and an escape hatch that opens the user's real terminal on
+the *same* tmux session — which is the payoff for WP-M2-1 and the reason it is
+worth doing first.
+
+- Touches: `app/src/main.ts`, `app/src-tauri/src/lib.rs`.
+- Done when: the escape hatch lands in the same session, with the same
+  scrollback, and detaching from either leaves the other working.
+- Verify: **needs macOS.**
+
 ## M3 — polish and ship · `TODO`
 
 Policy sets as checkboxes wired to `paddock firewall` (live retightening is one
