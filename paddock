@@ -291,7 +291,7 @@ def github_ranges() -> Optional[List[str]]:
         for c in data.get(key, []):
             if re.match(r"^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$", c):
                 cidrs.append(c)
-    return sorted(set(cidrs))
+    return sorted(set(cidrs)) or None
 
 
 def state_path(container: str) -> Path:
@@ -482,7 +482,7 @@ def install_policy(ws: Workspace, policy: Policy) -> None:
     `node`, cannot), then (re)apply the firewall."""
     # Fetched before anything is written and the firewall runs regardless: a
     # fresh container has no rules at all until this script has run once.
-    ranges = github_ranges() if policy.github else []
+    ranges = github_ranges() if policy.github and not policy.open else []
     write_root_file(ws, f"{POLICY_DIR}/mode", "open\n" if policy.open else "enforce\n")
     write_root_file(ws, f"{POLICY_DIR}/github-ranges.txt", "".join(c + "\n" for c in ranges or []))
     write_root_file(ws, f"{POLICY_DIR}/allowed-domains.txt", "".join(d + "\n" for d in policy.domains))
@@ -498,7 +498,7 @@ def install_policy(ws: Workspace, policy: Policy) -> None:
         die("firewall could not be fully applied — the sandbox is CLOSED (DNS only). "
             "Fix the network and run `paddock firewall`.", EXIT_CLOSED)
     if ranges is None:
-        die("firewall applied without GitHub (ranges unavailable) — the sandbox is CLOSED to GitHub. "
+        die("firewall applied without GitHub's IP ranges (unavailable) — the sandbox is CLOSED to GitHub's git/API hosts. "
             "Fix the network and run `paddock firewall`.", EXIT_CLOSED)
     info(f"policy: {policy.describe()} — {r.stdout.strip().splitlines()[-1] if r.stdout.strip() else 'applied'}")
 
@@ -727,7 +727,7 @@ def cmd_ls(a):
     for s in rows:
         pol = s["policy"]
         table.append([s["container"], s["state"], s["profile"],
-                      "CLOSED (firewall failed)" if s["closed"] else pol["describe"] if pol else "?",
+                      "CLOSED (policy not fully applied)" if s["closed"] else pol["describe"] if pol else "?",
                       " ".join(f"{p['host']}->{p['container']}" for p in s["ports"]),
                       s["workspace"]])
     widths = [max(len(str(r[i])) for r in [cols] + table) for i in range(len(cols))]

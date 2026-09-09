@@ -80,7 +80,7 @@ Policy sets are plain files in [`policies/`](policies/) (override or add your ow
 | `vscode` | marketplace + server download | VS Code *Attach to Running Container* |
 | `open` | everything | no firewall; for trusted tasks |
 
-The effective policy is **additive**: the union of the profile's `policies`, its `domains`, and any `--allow` hosts. To tighten, leave a set out. A policy set with flags stays in force while the sandbox runs; a fresh start returns to the profile's. `paddock ls` shows what each sandbox currently has (or `CLOSED` if the last firewall run failed). Some useful modes:
+The effective policy is **additive**: the union of the profile's `policies`, its `domains`, and any `--allow` hosts. To tighten, leave a set out. A policy set with flags stays in force while the sandbox runs; a fresh start returns to the profile's. `paddock ls` shows what each sandbox currently has (or `CLOSED` if the last policy application did not fully succeed — see [`docs/cli-json.md`](docs/cli-json.md)). Some useful modes:
 
 ```bash
 paddock run                             # profile policy, e.g. github + npm

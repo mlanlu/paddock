@@ -39,7 +39,7 @@ when there are none (the table prints `no sandboxes`).
 | `repo` | Name of the directory that owns the real `.git`; shared by every worktree of a repo. |
 | `profile` | Profile the sandbox was created with. |
 | `workspace` | Absolute host path of the sandboxed directory. |
-| `closed` | `true` when the last policy application did not fully succeed: either the firewall script failed and egress is DNS only, or GitHub's IP ranges were unavailable and everything else applied. Same condition as exit code `6`. The table shows `CLOSED (firewall failed)`. |
+| `closed` | `true` when the last policy application did not fully succeed: either the firewall script failed and egress is DNS only, or GitHub's IP ranges were unavailable and everything else applied. Same condition as exit code `6`. The table shows `CLOSED (policy not fully applied)`. |
 | `policy` | The domain policy paddock last tried to apply, or `null` when paddock has no persisted policy for it. Host-port access (`host_ports`) is not included. |
 | `policy.sets` | The persisted set names, e.g. `["github", "npm"]`. The `claude` set is always added on top and is not listed. `open` anywhere in the list means no firewall. When `closed` is `true` these describe the attempted policy, not necessarily what is in effect. |
 | `policy.extra` | Extra domains from the profile and `--allow`. |
@@ -96,11 +96,11 @@ differently get their own code; everything else is `1`.
 | Code | Meaning | What a caller can do |
 |---|---|---|
 | `1` | Any other failure. The message on stderr says what. | Show the message. |
-| `2` | Usage error: unknown command or flag, `exec` without a command. argparse owns this code. | Bug in the caller. |
+| `2` | Usage error: unknown command or flag, `exec` without a command. argparse owns this code. The Docker check runs first, so without Docker even a usage error is `3`. | Bug in the caller. |
 | `3` | Docker is not on `PATH` or the daemon is not running. Every command except `init` checks this first. | Offer to start Docker Desktop. |
 | `4` | Configuration missing or wrong: a `--profile` that does not exist, a policy set named by the profile or `--policies` that does not exist, invalid JSON in a profile, a bad `${…}` template in its `env`, or a `mounts` source that does not exist. | Offer `paddock init` or open the config directory. |
 | `5` | Provisioning failed (dependency install, corepack, …). The sandbox is running on the **provisioning** policy, which is the profile policy widened by `npm` and `github`, and stays that way until `paddock provision` succeeds. | Offer `paddock provision` after the network is fixed; show the sandbox as wider than its profile until then. |
-| `6` | The policy could not be fully applied and the sandbox is CLOSED: either the firewall script failed and egress is DNS only, or GitHub's IP ranges could not be fetched and the firewall was applied without them. `ls --json` reports `closed: true`. | Offer `paddock firewall` once the network is back. |
+| `6` | The policy could not be fully applied and the sandbox is CLOSED: either the firewall script failed and egress is DNS only, or GitHub's IP ranges could not be fetched and the firewall was applied without them (the `githubusercontent.com` hostnames in the set still resolve). If this happened during provisioning the live policy is the provisioning-widened one, as for `5`. `ls --json` reports `closed: true`. | Offer `paddock firewall` once the network is back. |
 | `7` | The command needs a running sandbox (`firewall`, `provision`) and there is none. | Offer `paddock up`. |
 
 `run`, `shell` and `exec` exit with the exit code of the command they ran

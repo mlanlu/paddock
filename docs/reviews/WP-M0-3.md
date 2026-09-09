@@ -35,3 +35,29 @@ source → `4`. `load_json` takes a code so the cache readers keep `1`.
 
 **F5** style — unnamed `2`, tuple unpack hides `EXIT_CLOSED =` from grep.
 → **Declined.** Style; the comment above the tuple explains `2`.
+
+## Decision review — opus, 2026-09-09
+
+F1 did not need the human first: it was a defect, fail-closed, one line to
+revert, reviewed before commit. But:
+
+**DR1** — `--policies open,github` with a failed fetch ran the firewall OPEN and
+still marked the sandbox CLOSED. → **Acted.** Ranges are not fetched in open
+mode. Observed: open,github with the fetch blocked → exit 0, `closed: false`.
+
+**DR2** — `closed` docs, the `ls` label and README still said "firewall
+failed"; the die message overstated. → **Acted.** Label is now `CLOSED (policy
+not fully applied)`; docs, README and message reworded; code-6 row notes the
+provisioning-widened case.
+
+**DR3** — `github_ranges()` returned `[]` on a parseable but empty response,
+silently producing the state the change was meant to make loud.
+→ **Acted.** Returns `None` when no usable CIDRs.
+
+**DR4** — residual: `write_root_file` failure on a fresh container still dies
+`1` before the firewall runs. → **Recorded** in PLAN.md under WP-M0-3.
+
+**DR5** — PLAN.md contradicted the code. → **Acted.** WP body corrected, D6
+added.
+
+F2 note (no Docker → `3` even for a usage error) → **Acted** in the doc row.

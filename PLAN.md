@@ -93,8 +93,8 @@ policy set) · `5` provisioning failed · `6` firewall closed · `7` sandbox not
 running. `1` stays the catch-all, `2` stays argparse's usage error — see D5.
 
 **Ask** because it touches `install_policy`, which is on the security list in the
-skill. The change itself only makes an existing failure more legible — it must
-not alter when paddock fails, only what it reports.
+skill. Intended to only make existing failures more legible; review found one
+failure that had to change shape as well — see D6.
 
 - Touches: `paddock` (`die` call sites), `docs/cli-json.md`, `README.md`.
 - Done when: each code is reachable and documented, and no failure path that
@@ -107,9 +107,15 @@ not alter when paddock fails, only what it reports.
   `init`). Unknown `--policies` → `4`, unknown `-p` → `4`, `firewall` on a
   stopped sandbox → `7`, unknown subcommand and `exec` without a command → `2`,
   a profile with `"install": "false"` → `5` from `paddock provision`.
-  `ls`/`up`/`info` success → `0`. **Not observed: `6`** — needs the firewall to
-  fail, which needs a broken network; the code path is the existing
-  `install_policy` die with a code attached.
+  `ls`/`up`/`info` success → `0`. `6` observed by blocking the host's GitHub
+  fetch: firewall applied, example.com and github.com unreachable, npm
+  reachable, state `closed: true`. The firewall-script-failure route to `6`
+  was not observed (needs a broken network inside the VM).
+- Residual (WP-M0-3 decision review): `install_policy` can still die with `1`
+  before the firewall runs if a `write_root_file` docker exec fails on a
+  container `up` has just started. `ensure_up` dies before handing out a
+  shell, so it needs an out-of-band attach. Stop the fresh container in that
+  case if it ever bites.
 
 ---
 
@@ -242,6 +248,16 @@ but argparse exits `2` on any usage error and that is not worth overriding. A
 caller that gets `2` has a bug in its own invocation; everything paddock itself
 diagnoses starts at `3`. `exec` without a command also uses `2`, since it is a
 usage error argparse cannot see.
+
+**D6 — a missing GitHub range fetch closes the sandbox rather than aborting.**
+Before WP-M0-3, `github_ranges()` died mid-way through writing `/etc/paddock`
+and before the firewall script ran. On a freshly created container that left
+a running sandbox with no iptables rules at all, reported as exit `1`. Now the
+ranges are fetched first; on failure the firewall runs with an empty ranges
+file (the script fails closed; empty means fewer ipset entries), the sandbox is
+marked `closed` and paddock exits `6`. Not fetched at all in `open` mode, so
+an open sandbox is never labelled CLOSED. Made autonomously in an agent session
+after two review rounds; revert is one line if the human disagrees.
 
 **D4 — stream text for progress, not a structured event protocol.** `info()`
 already emits readable `paddock: …` lines. A porcelain event stream would be an
