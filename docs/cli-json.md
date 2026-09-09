@@ -21,11 +21,11 @@ when there are none (the table prints `no sandboxes`).
     "repo": "openmatch",
     "profile": "openmatch",
     "workspace": "/Users/you/Documents/openmatch-web",
+    "closed": false,
     "policy": {
       "sets": ["github", "npm"],
       "extra": ["fonts.googleapis.com"],
-      "describe": "github,npm +1",
-      "closed": false
+      "describe": "github,npm +1"
     },
     "ports": [{"host": 3010, "container": 3000}]
   }
@@ -39,11 +39,11 @@ when there are none (the table prints `no sandboxes`).
 | `repo` | Name of the directory that owns the real `.git`; shared by every worktree of a repo. |
 | `profile` | Profile the sandbox was created with. |
 | `workspace` | Absolute host path of the sandboxed directory. |
-| `policy` | The egress policy last applied by paddock, or `null` if paddock has not applied one yet (no state file — the sandbox predates policy persistence). |
-| `policy.sets` | Policy sets in effect, e.g. `["github", "npm"]`. `["open"]` means no firewall. |
+| `closed` | `true` when the last firewall run failed and the sandbox is DNS-only, whatever `policy` says. The table shows `CLOSED (firewall failed)`. |
+| `policy` | The domain policy paddock last tried to apply, or `null` if it has not applied one yet (no state file — the sandbox predates policy persistence). Host-port access (`host_ports`) is not included. |
+| `policy.sets` | The persisted set names, e.g. `["github", "npm"]`. The `claude` set is always added on top and is not listed. `open` anywhere in the list means no firewall. When `closed` is `true` these describe the attempted policy, not what is in effect. |
 | `policy.extra` | Extra domains from the profile and `--allow`. |
-| `policy.describe` | The string the table shows, e.g. `github,npm +1`, `strict`, `open`. |
-| `policy.closed` | `true` when the last firewall run failed and the sandbox is DNS-only. The table shows `CLOSED (firewall failed)`. |
+| `policy.describe` | Human summary of `sets` and `extra`, e.g. `github,npm +1`, `strict`, `open`. |
 | `ports` | Published ports as pairs. `host` is on `127.0.0.1`; `container` is the port inside. Empty list when the profile publishes none. |
 
 ## `paddock info PATH --json`
@@ -52,7 +52,9 @@ Resolves `PATH` exactly as `paddock up PATH` would — repo, container name,
 profile, policy, ports — and reports what it found without creating,
 starting or writing anything. It is how the app shows what *will* happen
 before the user commits, and how it knows to offer `paddock init` when there is
-no profile. It needs the Docker daemon, to look up the container.
+no profile. It needs the Docker daemon to look up the container and exits `3`
+without it, so the app must handle that before it can show anything — even the
+profile lookup, which needs no Docker.
 
 ```json
 {
@@ -78,13 +80,13 @@ no profile. It needs the Docker daemon, to look up the container.
 | `name` | Basename of `root`. Equals `repo` unless this is a linked worktree or a differently named clone. |
 | `container` | The container name `up` would use. |
 | `common_git` | Absolute path of the shared `.git` when `root` is a linked worktree, else `null`. |
-| `profile` | Profile name that would apply: `--profile`, else `repo`, else `default`. |
+| `profile` | Profile name a fresh start would use: `--profile`, else `repo`, else `default`. An existing container keeps the profile it was created with, which `ls --json` reports; the two differ only if it was created with a different `-p`. |
 | `profile_path` | File the profile was read from, or `null` when only `profiles/default.json` applies. `null` is the cue to offer `paddock init`. |
-| `env_file` | `~/.config/paddock/env/<profile>.env` if it exists, else `null`. |
+| `env_file` | `~/.config/paddock/env/<profile>.env` if it exists, else `null`. Like `profile`, this is what a fresh start would use; an existing container's environment was fixed when it was created. |
 | `state` | Docker's state string for the container, or `null` when it does not exist. |
 | `provisioned` | Whether first-start provisioning has run. Only knowable for a running container (it is a `docker exec`); `null` otherwise. |
 | `ports` | Published port pairs, as in `ls`. For an existing container, the actual mapping; otherwise the mapping `up` would assign right now, which may differ by the time `up` runs. |
-| `policy` | The profile's egress policy, as `up` applies it on a fresh start. `--policies`/`--allow` are not consulted; a running sandbox may carry a different live policy, which `ls --json` reports. |
+| `policy` | The profile's egress policy, as `up` applies it on a fresh start: `sets`, `extra`, `describe` as in `ls`. `--policies`/`--allow` are not consulted; a running sandbox may carry a different live policy, which `ls --json` reports. There is no `closed` here — that is a fact about a live sandbox and lives on the `ls` row. |
 
 ## Exit codes
 

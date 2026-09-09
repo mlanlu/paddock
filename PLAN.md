@@ -29,18 +29,20 @@ implementation in Rust would be a second thing that can disagree with the first.
 
 ---
 
-## M0 — CLI seams · `TODO`
+## M0 — CLI seams · `REVIEW`
 
 Machine-readable output so the app has something to consume. Ships useful on its
 own: `ls --json` is worth having with or without an app.
 
-### WP-M0-1 — `paddock ls --json` · Show · `TODO`
+### WP-M0-1 — `paddock ls --json` · Show · `REVIEW`
 
 The app must not parse the table. Split `cmd_ls` into one function that builds
 the rows and one that renders them, then render either the table or JSON.
 
 Shape, per sandbox: `container`, `state`, `repo`, `profile`, `workspace`,
-`policy` (`sets`, `extra`, `describe`, `closed`), `ports` (`[{host, container}]`).
+`closed`, `policy` (`sets`, `extra`, `describe`), `ports` (`[{host, container}]`).
+`closed` is a fact about the sandbox, not the policy, so it sits at the top
+level where it survives `policy` being `null` (moved there in review).
 Ports as a list of pairs, not the `"3010->3000"` display string.
 
 - Touches: `paddock` (`cmd_ls`), `docs/cli-json.md` (new), `README.md` command list.
@@ -49,8 +51,11 @@ Ports as a list of pairs, not the `"3010->3000"` display string.
 - Verify: run both with two sandboxes up, one stopped, one `CLOSED`; confirm the
   table is unchanged and the JSON round-trips through `python3 -m json.tool`.
   **Needs Docker.**
+- Done 2026-09-09 (c48e2f6). Observed: table byte-identical against the
+  pre-change binary with three sandboxes (one running, two stopped); JSON parses;
+  a CLOSED state (faked in the state file of a scratch sandbox) renders in both.
 
-### WP-M0-2 — `paddock info PATH --json` · Show · `TODO`
+### WP-M0-2 — `paddock info PATH --json` · Show · `REVIEW`
 
 Resolve a path with no side effects, so the app can show what *will* happen
 before the user commits to it, and offer `paddock init` when there is no profile.
@@ -68,16 +73,24 @@ sandbox. Report `null` otherwise rather than guessing or starting anything.
 - Verify: run in a repo with no profile (expect `profile_path: null`), in a
   worktree (expect `common_git` set and the repo's profile), and against a
   running sandbox. Confirm `docker ps -a` is unchanged after each.
+- Done 2026-09-09 (a9709a1). Observed on a plain directory with no profile
+  (`profile_path: null`, `state: null`, ports previewed via `assign_ports`), on
+  the openmatch main repo without a container, on the `openmatch-web` linked
+  worktree with a stopped container (`common_git` set, repo's profile and
+  ports), and on a running scratch sandbox (`provisioned: true`). `docker ps -a`
+  identical before and after. Adds a `provisioned` field the PLAN shape lacked —
+  the app needs it to show "will provision on start"; it is the one thing only a
+  running sandbox can answer, hence nullable.
 
-### WP-M0-3 — distinct exit codes · Ask · `TODO`
+### WP-M0-3 — distinct exit codes · Ask · `REVIEW`
 
 `die()` exits `1` for everything, so a caller cannot tell "Docker is not
 running" from "provisioning failed" from "the firewall is CLOSED" — and each of
 those wants a different button in the UI.
 
-Proposed: `2` docker unavailable · `3` configuration missing (no profile, no
-policy set) · `4` provisioning failed · `5` firewall closed · `6` sandbox not
-running. `1` stays the catch-all.
+Shipped: `3` docker unavailable · `4` configuration missing (no profile, no
+policy set) · `5` provisioning failed · `6` firewall closed · `7` sandbox not
+running. `1` stays the catch-all, `2` stays argparse's usage error — see D5.
 
 **Ask** because it touches `install_policy`, which is on the security list in the
 skill. The change itself only makes an existing failure more legible — it must
@@ -86,14 +99,23 @@ not alter when paddock fails, only what it reports.
 - Touches: `paddock` (`die` call sites), `docs/cli-json.md`, `README.md`.
 - Done when: each code is reachable and documented, and no failure path that
   previously exited non-zero now exits zero.
-- Verify: stop Docker → expect `2`. Point at a directory with an unknown
-  `--policies` value → expect `3`. Confirm success paths still exit `0`.
+- Verify: docker off `PATH` → expect `3`. Unknown `--policies` value →
+  expect `4`. Confirm success paths still exit `0`.
+- Done 2026-09-09. Observed: `PATH` without docker → `3` for `ls` and `stop`
+  (`ls` previously died with a `FileNotFoundError` traceback, since it never
+  called `docker_ok()`; the check now runs in `main` for every command but
+  `init`). Unknown `--policies` → `4`, unknown `-p` → `4`, `firewall` on a
+  stopped sandbox → `7`, unknown subcommand and `exec` without a command → `2`,
+  a profile with `"install": "false"` → `5` from `paddock provision`.
+  `ls`/`up`/`info` success → `0`. **Not observed: `6`** — needs the firewall to
+  fail, which needs a broken network; the code path is the existing
+  `install_policy` die with a code attached.
 
 ---
 
 ## Fixes found along the way
 
-### WP-FIX-1 — provisioning marker outlived the container · Show · `REVIEW`
+### WP-FIX-1 — provisioning marker outlived the container · Show · `DONE`
 
 `provisioned()` checked `/commandhistory/.paddock-provisioned`, but
 `/commandhistory` is a volume that `paddock rm` deliberately keeps, while most
@@ -119,8 +141,13 @@ repairs exactly this state.
 - Verify: **needs Docker.** `paddock up` → `paddock rm` → `paddock up`, then
   confirm `~/.gitconfig` exists inside and `git config --global --get-all
   safe.directory` returns `*`. Then `paddock stop` → `paddock up` and confirm
-  provisioning is *skipped*. Not run here: this session has no Docker socket.
-- Review: pending — Show class, review not yet run.
+  provisioning is *skipped*.
+- Done 2026-09-09 (fd86e8a, ed17f8e). Observed on a scratch workspace: `rm` +
+  `up` re-provisioned (`~/.gitconfig` present, `safe.directory = *`), `stop` +
+  `up` skipped provisioning, the `node` user cannot remove or create files in
+  `/etc/paddock`, `paddock provision` still works.
+- Review: `docs/reviews/WP-FIX-1.md` — two comment findings, both acted on;
+  decision review agrees.
 
 ---
 
@@ -203,6 +230,12 @@ spawn cost is irrelevant at this interaction rate.
 untested: `create_container` bind-mounts the workspace at its literal path
 (`-v /Users/you/repo:/Users/you/repo`), which has no direct `C:\` equivalent.
 Supporting it is CLI work, independent of the UI, and nobody needs it.
+
+**D5 — exit codes start at 3.** The plan proposed `2` for "Docker unavailable",
+but argparse exits `2` on any usage error and that is not worth overriding. A
+caller that gets `2` has a bug in its own invocation; everything paddock itself
+diagnoses starts at `3`. `exec` without a command also uses `2`, since it is a
+usage error argparse cannot see.
 
 **D4 — stream text for progress, not a structured event protocol.** `info()`
 already emits readable `paddock: …` lines. A porcelain event stream would be an
