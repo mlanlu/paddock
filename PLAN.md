@@ -29,12 +29,12 @@ implementation in Rust would be a second thing that can disagree with the first.
 
 ---
 
-## M0 — CLI seams · `REVIEW`
+## M0 — CLI seams · `DONE`
 
 Machine-readable output so the app has something to consume. Ships useful on its
 own: `ls --json` is worth having with or without an app.
 
-### WP-M0-1 — `paddock ls --json` · Show · `REVIEW`
+### WP-M0-1 — `paddock ls --json` · Show · `DONE`
 
 The app must not parse the table. Split `cmd_ls` into one function that builds
 the rows and one that renders them, then render either the table or JSON.
@@ -55,7 +55,7 @@ Ports as a list of pairs, not the `"3010->3000"` display string.
   pre-change binary with three sandboxes (one running, two stopped); JSON parses;
   a CLOSED state (faked in the state file of a scratch sandbox) renders in both.
 
-### WP-M0-2 — `paddock info PATH --json` · Show · `REVIEW`
+### WP-M0-2 — `paddock info PATH --json` · Show · `DONE`
 
 Resolve a path with no side effects, so the app can show what *will* happen
 before the user commits to it, and offer `paddock init` when there is no profile.
@@ -82,7 +82,7 @@ sandbox. Report `null` otherwise rather than guessing or starting anything.
   the app needs it to show "will provision on start"; it is the one thing only a
   running sandbox can answer, hence nullable.
 
-### WP-M0-3 — distinct exit codes · Ask · `REVIEW`
+### WP-M0-3 — distinct exit codes · Ask · `DONE`
 
 `die()` exits `1` for everything, so a caller cannot tell "Docker is not
 running" from "provisioning failed" from "the firewall is CLOSED" — and each of
@@ -158,6 +158,9 @@ repairs exactly this state.
 ---
 
 ## M1 — app skeleton, no terminal · `TODO`
+
+M0 closed 2026-09-09; reviews in `docs/reviews/WP-M0-*.md`. Break this into
+work packages next.
 
 Tauri scaffold in `app/`. Native folder picker, sandbox list from `ls --json`,
 `paddock up` with its output streamed into a log panel, stop/rm/reset.
