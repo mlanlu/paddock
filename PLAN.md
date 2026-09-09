@@ -51,7 +51,7 @@ Ports as a list of pairs, not the `"3010->3000"` display string.
 - Verify: run both with two sandboxes up, one stopped, one `CLOSED`; confirm the
   table is unchanged and the JSON round-trips through `python3 -m json.tool`.
   **Needs Docker.**
-- Done 2026-09-09 (c48e2f6). Observed: table byte-identical against the
+- Done 2026-09-09 (066563b). Observed: table byte-identical against the
   pre-change binary with three sandboxes (one running, two stopped); JSON parses;
   a CLOSED state (faked in the state file of a scratch sandbox) renders in both.
 
@@ -73,7 +73,7 @@ sandbox. Report `null` otherwise rather than guessing or starting anything.
 - Verify: run in a repo with no profile (expect `profile_path: null`), in a
   worktree (expect `common_git` set and the repo's profile), and against a
   running sandbox. Confirm `docker ps -a` is unchanged after each.
-- Done 2026-09-09 (a9709a1). Observed on a plain directory with no profile
+- Done 2026-09-09 (d5882fb). Observed on a plain directory with no profile
   (`profile_path: null`, `state: null`, ports previewed via `assign_ports`), on
   the openmatch main repo without a container, on the `openmatch-web` linked
   worktree with a stopped container (`common_git` set, repo's profile and
@@ -148,7 +148,7 @@ repairs exactly this state.
   confirm `~/.gitconfig` exists inside and `git config --global --get-all
   safe.directory` returns `*`. Then `paddock stop` → `paddock up` and confirm
   provisioning is *skipped*.
-- Done 2026-09-09 (fd86e8a, ed17f8e). Observed on a scratch workspace: `rm` +
+- Done 2026-09-09 (e42f668, 0306198). Observed on a scratch workspace: `rm` +
   `up` re-provisioned (`~/.gitconfig` present, `safe.directory = *`), `stop` +
   `up` skipped provisioning, the `node` user cannot remove or create files in
   `/etc/paddock`, `paddock provision` still works.

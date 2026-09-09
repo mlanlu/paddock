@@ -1,6 +1,6 @@
 # WP-M0-2 — paddock info PATH --json
 
-## Review 1 — opus, 2026-09-09, commit a9709a1
+## Review 1 — opus, 2026-09-09, commit d5882fb
 
 Mutation audit clean: no `github_ranges`, no state write, no docker create or
 start; `host_port_free` binds and closes a socket, nothing more.

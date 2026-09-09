@@ -1,10 +1,10 @@
 # WP-FIX-1 — provisioning marker outlived the container
 
-## Review 1 — opus, 2026-09-09, commit fd86e8a
+## Review 1 — opus, 2026-09-09, commit e42f668
 
 **F1** `paddock:35-37` — the comment claims the settings copy lives in the
 container filesystem; it goes to the `claude` volume and survives `rm`.
-→ **Acted.** Comment and the PLAN.md paragraph corrected (ed17f8e).
+→ **Acted.** Comment and the PLAN.md paragraph corrected (0306198).
 
 **F2** `paddock:35-37` — comment can be shorter and still carry the why.
 → **Acted.** Two-sentence version; now also records the hardening the

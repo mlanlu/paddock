@@ -1,6 +1,6 @@
 # WP-M0-1 — paddock ls --json
 
-## Review 1 — opus, 2026-09-09, commit c48e2f6
+## Review 1 — opus, 2026-09-09, commit 066563b
 
 **F1** `paddock:715` — table not byte-identical for a state file with
 `closed: true` and no `policy` key: was `CLOSED (firewall failed)`, now `?`.
@@ -42,12 +42,12 @@ access is not included.
 then a list in the same function.
 → **Acted.** `port_pairs(label)` helper, shared with `cmd_info`; renamed.
 
-Follow-up commit: 179f2db.
+Follow-up commit: 4cc44af.
 
 ## Decision review — opus, 2026-09-09
 
 No decline wrong. **D1**: the reworded `closed` row said DNS-only, but since
-17e8ffc `closed` is also set when GitHub's ranges were unavailable and
+0d397fa `closed` is also set when GitHub's ranges were unavailable and
 everything else applied. → **Acted.** Row now matches the exit-6 wording.
 **D2**: `policy: null` cause over-specified. → **Acted.** **D3**: two more
 label parses in `reserved_host_ports` and `ensure_up`. → **Acted.** Both use

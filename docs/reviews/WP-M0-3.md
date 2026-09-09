@@ -1,6 +1,6 @@
 # WP-M0-3 — distinct exit codes (Ask)
 
-## Review 1 — opus, 2026-09-09, working-tree diff before commit 17e8ffc
+## Review 1 — opus, 2026-09-09, working-tree diff before commit 0d397fa
 
 Confirmed `install_policy` unchanged apart from the code argument; no path that
 exited non-zero now exits zero; moving `docker_ok()` into `main` is right for
