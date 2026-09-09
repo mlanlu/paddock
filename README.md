@@ -93,7 +93,7 @@ paddock run --policies open             # no firewall
 
 **Why no deny list?** The firewall matches IPs, and hosts share them: `raw.githubusercontent.com` and `gist.github.com` sit in the same ranges as `github.com` and `api.github.com`. A sandbox that can `git push` can also fetch a script from a raw URL — you can't allow one and deny the other at this layer. So GitHub is all-or-nothing, and paddock doesn't offer a `deny` that would only work for hosts with dedicated IPs. Exact per-hostname control needs an L7 filtering proxy in front of the sandbox; that's the natural next mode.
 
-**Dependency installs** during provisioning run with the profile policy widened by `npm` + `github` (never the open internet), then the real policy is applied. Provisioning happens once per sandbox; `paddock provision` re-runs it.
+**Dependency installs** during provisioning run with the profile policy widened by `npm` + `github` (never the open internet), then the real policy is applied. Provisioning happens once per **container**: a stopped sandbox restarts without it, but `paddock rm` followed by `paddock up` builds a fresh container and provisions that one too (cheap — the `node_modules` volumes survive). `paddock provision` re-runs it on demand.
 
 **Ports.** Each sandbox publishes the profile's `ports` on `127.0.0.1`. The first sandbox of a profile gets them 1:1 (`3000→3000`), the next gets `+10` (`3010→3000`), and so on, so two worktrees can both run `next dev` on 3000. `${port:N}` in `env` resolves to the host port, which is what browser-side URLs need. `paddock ls` shows the mapping.
 
@@ -132,7 +132,7 @@ paddock init    [PATH] [-p PROFILE] [--force]     write profile + env skeleton
 
 - **One image** (`paddock/sandbox:node<version>`), rebuilt automatically when the Dockerfile or scripts change (content hash in a label). `--rebuild` forces a no-cache build. Policy is not in the image.
 - **Container per workspace**, named `paddock-<repo>[-<dir>]`, labelled with workspace, profile and port map. `up` is idempotent; a stopped sandbox is restarted and the firewall re-applied.
-- **First start** provisions: chowns the volume mountpoints, sets `safe.directory` and `gc.worktreePruneExpire=never` (so an agent's `git worktree prune` can't drop your unmounted sibling worktrees), activates the `packageManager` from `package.json` via corepack, runs the install command, and wires `gh` as git's credential helper if `GH_TOKEN` is set.
+- **A container's first start** provisions: chowns the volume mountpoints, sets `safe.directory` and `gc.worktreePruneExpire=never` (so an agent's `git worktree prune` can't drop your unmounted sibling worktrees), activates the `packageManager` from `package.json` via corepack, runs the install command, and wires `gh` as git's credential helper if `GH_TOKEN` is set.
 - **Every start** paddock writes the resolved policy (mode, domains, GitHub flag, host ports) into the root-owned `/etc/paddock` via `docker exec -u root`, then runs [`image/init-firewall.sh`](image/init-firewall.sh): DROP policies and the fixed rules first, then resolve the allowlist into an ipset, then verify that `example.com` is unreachable. **Fail-closed**: if resolution fails (no network), the sandbox is left with DNS only and paddock tells you to `paddock firewall` once the network is back.
 
 ## Limits and caveats

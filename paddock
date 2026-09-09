@@ -32,6 +32,10 @@ LABEL = "paddock"
 CONTAINER_USER = "node"
 HISTORY_DIR = "/commandhistory"
 POLICY_DIR = "/etc/paddock"
+# In the container filesystem, not a volume: provisioning writes the git config,
+# corepack activation and the settings copy into the container, so a marker that
+# outlived `paddock rm` made the next `up` skip provisioning for a fresh one.
+PROVISION_MARKER = f"{POLICY_DIR}/provisioned"
 HOST_CLAUDE = Path.home() / ".claude"
 CONTAINER_CLAUDE = "/home/node/.claude"
 PORT_STEP = 10  # host ports for the 2nd sandbox of a profile are +10, 3rd +20, ...
@@ -482,7 +486,7 @@ def install_policy(ws: Workspace, policy: Policy) -> None:
 
 
 def provisioned(ws: Workspace) -> bool:
-    return exec_in(ws, ["test", "-f", f"{HISTORY_DIR}/.paddock-provisioned"], check=False, quiet=True) == 0
+    return exec_in(ws, ["test", "-f", PROVISION_MARKER], check=False, quiet=True) == 0
 
 
 def provision(ws: Workspace, prof: dict, env_file_present: bool) -> None:
@@ -514,7 +518,7 @@ def provision(ws: Workspace, prof: dict, env_file_present: bool) -> None:
         if settings:
             exec_in(ws, ["bash", "-c", f"test -e {CONTAINER_CLAUDE}/settings.json || cat > {CONTAINER_CLAUDE}/settings.json"], input=settings)
             info("copied ~/.claude/settings.json into the sandbox (paths rewritten)")
-    exec_in(ws, ["touch", f"{HISTORY_DIR}/.paddock-provisioned"])
+    exec_in(ws, ["touch", PROVISION_MARKER], user="root")
 
 
 def create_container(ws: Workspace, profile: str, prof: dict, tag: str) -> None:
