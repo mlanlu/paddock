@@ -157,10 +157,7 @@ repairs exactly this state.
 
 ---
 
-## M1 — app skeleton, no terminal · `TODO`
-
-M0 closed 2026-09-09; reviews in `docs/reviews/WP-M0-*.md`. Break this into
-work packages next.
+## M1 — app skeleton, no terminal · `WIP`
 
 Tauri scaffold in `app/`. Native folder picker, sandbox list from `ls --json`,
 `paddock up` with its output streamed into a log panel, stop/rm/reset.
@@ -171,7 +168,100 @@ failure lives: a GUI app on macOS does not inherit the shell's `PATH`, so
 `paddock` and `docker` are not found. Resolve binaries explicitly — config
 override, then `~/.local/bin`, then `/opt/homebrew/bin`, then a login shell.
 
-Break into work packages when M0 closes.
+**Structural constraint on every work package below.** Agent sessions develop
+paddock from inside a paddock sandbox, which has no macOS and, until the image
+carries D7's toolchain, no `cargo` either. So the logic lives in `app/src-tauri/
+src/core/` — plain Rust, no `tauri` dependency, unit-tested — and the Tauri
+layer stays a thin shell of `#[tauri::command]` wrappers over it. That is the
+only part of the app an agent can actually verify, and it is the right shape
+anyway.
+
+### WP-M1-1 — Tauri scaffold · Show · `TODO`
+
+Tauri v2 in `app/`, vanilla TypeScript + Vite frontend. No framework: the whole
+app is a list, a log panel and six buttons, and M2's xterm.js is
+framework-agnostic. A window that opens and builds is the deliverable.
+
+- Touches: `app/` (new), root `README.md`, `app/README.md` (new).
+- Done when: `npm run tauri dev` opens a window on the host, `cargo check`
+  passes, and `app/README.md` says how to build.
+- Verify: `cargo check` in the sandbox; `npm run tauri dev` **on the host —
+  needs macOS.**
+
+### WP-M1-2 — binary resolution · Ask · `TODO`
+
+The milestone's whole reason for existing. A bundled `.app` launched from Finder
+inherits `launchd`'s `PATH`, not the shell's, so `paddock` and `docker` are
+simply absent. Resolve in order: a config override, `~/.local/bin`,
+`/opt/homebrew/bin`, `/usr/local/bin`, then a login shell (`$SHELL -lic 'command
+-v paddock'`) as the last resort.
+
+Classified **Ask** because it decides which binary the app executes. Resolution
+must never fall back to a relative path or the process `PATH`, and the login
+shell must be the user's own — a resolver that can be pointed at an attacker's
+`paddock` hands over everything the real one guarantees.
+
+- Touches: `app/src-tauri/src/core/resolve.rs` (new).
+- Done when: resolution is a pure function over an injected filesystem probe,
+  unit-tested for each rung and for the not-found case, and it returns an
+  absolute path or a typed error that names what it looked for.
+- Verify: `cargo test` in the sandbox. **No Docker or macOS needed** — this is
+  the one work package that is fully verifiable from inside a sandbox, which is
+  why it is worth isolating.
+
+### WP-M1-3 — sandbox list from `ls --json` · Show · `TODO`
+
+Typed Rust structs over the WP-M0-1 contract in `docs/cli-json.md`, rendered as
+the app's main table: container, state, repo, profile, policy, ports.
+
+The contract is the seam. Deserialisation must fail loudly on a shape it does
+not recognise rather than rendering a half-empty row, because a silent mismatch
+here looks like a broken sandbox to the user.
+
+- Touches: `app/src-tauri/src/core/cli.rs` (new), frontend table.
+- Done when: `ls --json` output parses into typed structs, a malformed payload
+  produces a typed error, and the table renders with zero sandboxes.
+- Verify: `cargo test` against fixtures captured from the real CLI. Live run
+  **needs Docker.**
+
+### WP-M1-4 — folder picker and `info` preview · Show · `TODO`
+
+Native folder picker, then `paddock info PATH --json` (WP-M0-2 — no side
+effects) to show what *will* happen before anything runs: which profile
+resolves, which policy sets, whether a container already exists.
+
+- Touches: `app/src-tauri/src/core/cli.rs`, frontend.
+- Done when: picking a folder shows the resolved profile and policy without
+  starting anything.
+- Verify: **needs Docker and macOS.**
+
+### WP-M1-5 — streamed `paddock up` · Show · `TODO`
+
+The spawn → stream → render chain. `paddock up` spawned with piped stdout and
+stderr, lines pushed to the frontend as Tauri events, rendered into a log panel.
+
+Interleaving matters: paddock writes progress to stderr and results to stdout,
+so the panel must merge them in arrival order or the log reads as if steps
+happened out of sequence. Exit codes are the M0 contract — surface the distinct
+code, not "it failed".
+
+- Touches: `app/src-tauri/src/core/proc.rs` (new), frontend log panel.
+- Done when: a full `up` streams line by line rather than appearing at the end,
+  and a non-zero exit shows the code and its meaning.
+- Verify: run `up` on a cold sandbox and watch the image build stream.
+  **Needs Docker.**
+
+### WP-M1-6 — stop, rm, reset · Show · `TODO`
+
+The three lifecycle buttons, reusing WP-M1-5's streaming.
+
+`reset` destroys volumes — `node_modules` and the Claude login — so it gets a
+confirmation naming what is lost. `rm` keeps them and does not.
+
+- Touches: frontend, `app/src-tauri/src/core/cli.rs`.
+- Done when: all three run and the list refreshes; `reset` cannot fire without
+  a confirmation that says the Claude login goes with it.
+- Verify: **needs Docker.**
 
 ## M2 — embedded terminal · `TODO`
 
