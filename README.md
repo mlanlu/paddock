@@ -117,7 +117,7 @@ paddock run     [PATH] [-p PROFILE] [-- args]     up + claude --dangerously-skip
 paddock shell   [PATH]                            up + zsh
 paddock exec    [PATH] -- <cmd>                   up + run a command inside
                 (up/run/shell/exec also take --policies and --allow)
-paddock ls                                        sandboxes, state, ports, workspaces
+paddock ls      [--json]                          sandboxes, state, ports, workspaces
 paddock stop    [PATH]
 paddock rm      [PATH]                            remove container, keep volumes
 paddock reset   [PATH]                            remove container + volumes (node_modules, Claude login)
@@ -126,7 +126,7 @@ paddock provision [PATH]                          re-run first-start provisionin
 paddock init    [PATH] [-p PROFILE] [--force]     write profile + env skeleton
 ```
 
-`PATH` defaults to the current directory; any directory inside a checkout works.
+`PATH` defaults to the current directory; any directory inside a checkout works. `--json` shapes are documented in [`docs/cli-json.md`](docs/cli-json.md).
 
 ## How it works
 

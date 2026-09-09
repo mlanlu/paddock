@@ -683,20 +683,38 @@ def cmd_provision(a):
     install_policy(ws, policy)
 
 
+def sandbox_rows() -> List[dict]:
+    """One dict per sandbox; the table and --json both render from this."""
+    out = []
+    for c in all_containers():
+        st = load_state(c["name"])
+        pol = st.get("policy")
+        policy = None
+        if pol:
+            p = Policy(pol.get("sets", []), pol.get("extra", []), pol.get("host_ports", []))
+            policy = {"sets": p.sets, "extra": p.extra, "describe": p.describe(), "closed": bool(st.get("closed"))}
+        ports = [{"host": int(pair.split(":")[1]), "container": int(pair.split(":")[0])}
+                 for pair in (c.get("paddock.ports") or "").split(",") if pair]
+        out.append({"container": c["name"], "state": c["state"], "repo": c.get("paddock.repo", ""),
+                    "profile": c.get("paddock.profile", ""), "workspace": c.get("paddock.workspace", ""),
+                    "policy": policy, "ports": ports})
+    return out
+
+
 def cmd_ls(a):
-    rows = all_containers()
+    rows = sandbox_rows()
+    if a.json:
+        print(json.dumps(rows, indent=2)); return
     if not rows:
         print("no sandboxes"); return
     cols = ["SANDBOX", "STATE", "PROFILE", "POLICY", "PORTS", "WORKSPACE"]
     table = []
-    for c in rows:
-        state = load_state(c["name"]); st = state.get("policy") or {}
-        pol = Policy(st.get("sets", []), st.get("extra", []), st.get("host_ports", [])).describe() if st else "?"
-        if state.get("closed"):
-            pol = "CLOSED (firewall failed)"
-        table.append([c["name"], c["state"], c.get("paddock.profile", ""), pol,
-                      " ".join(f"{p.split(':')[1]}->{p.split(':')[0]}" for p in (c.get("paddock.ports") or "").split(",") if p),
-                      c.get("paddock.workspace", "")])
+    for r in rows:
+        pol = r["policy"]
+        table.append([r["container"], r["state"], r["profile"],
+                      "CLOSED (firewall failed)" if pol and pol["closed"] else pol["describe"] if pol else "?",
+                      " ".join(f"{p['host']}->{p['container']}" for p in r["ports"]),
+                      r["workspace"]])
     widths = [max(len(str(r[i])) for r in [cols] + table) for i in range(len(cols))]
     for r in [cols] + table:
         print("  ".join(str(v).ljust(w) for v, w in zip(r, widths)).rstrip())
@@ -755,7 +773,7 @@ def main(argv: List[str]) -> None:
     add("stop", cmd_stop, "stop the sandbox", profile=False)
     add("rm", cmd_rm, "remove the sandbox container (keeps its volumes)", profile=False)
     add("reset", cmd_reset, "remove the sandbox container AND its volumes (node_modules, Claude login)", profile=False)
-    add("ls", cmd_ls, "list sandboxes", path=False, profile=False)
+    add("ls", cmd_ls, "list sandboxes", path=False, profile=False).add_argument("--json", action="store_true", help="machine-readable output (see docs/cli-json.md)")
     add("init", cmd_init, "write a profile + secrets skeleton for this repo").add_argument("--force", action="store_true")
 
     a = p.parse_args(argv)
