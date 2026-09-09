@@ -77,6 +77,7 @@ Policy sets are plain files in [`policies/`](policies/) (override or add your ow
 | `npm` | registry.npmjs.org, registry.yarnpkg.com | npm / pnpm / yarn / corepack |
 | `pypi` | pypi.org, files.pythonhosted.org | pip / uv |
 | `apt` | deb.debian.org, security.debian.org | apt-get inside the sandbox |
+| `rust` | static.rust-lang.org, crates.io + its index | rustup / cargo inside the sandbox |
 | `vscode` | marketplace + server download | VS Code *Attach to Running Container* |
 | `open` | everything | no firewall; for trusted tasks |
 
@@ -144,6 +145,17 @@ paddock init    [PATH] [-p PROFILE] [--force]     write profile + env skeleton
 - Sibling worktrees are not mounted, so `git worktree list` inside shows them as *prunable*. `gc.worktreePruneExpire=never` protects them from a plain `prune`; `--expire now` would still remove them (recover with `git worktree repair` on the host).
 - Docker Desktop on macOS: `host.docker.internal` is the VM's view of your Mac — the container reaches host services, but the browser on your Mac uses `localhost` and the published ports.
 - No GPU, no Linux namespaces beyond what Docker gives you; this is a container, not a VM. For a stronger boundary, run Docker with a microVM runtime.
+
+## The desktop app
+
+[`app/`](app/) is a Tauri front end for this CLI: pick a folder, watch its
+sandbox come up, and get a terminal on `claude` inside it. It is in progress —
+see [`PLAN.md`](PLAN.md) for what is built and what is not, and
+[`app/README.md`](app/README.md) for how to build it.
+
+The CLI stays the engine. The app shells out to `paddock` and never talks to
+Docker directly, because a second implementation of policy resolution in Rust
+would be a second thing that can disagree with the first.
 
 ## Credits
 
