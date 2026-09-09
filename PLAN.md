@@ -176,7 +176,7 @@ layer stays a thin shell of `#[tauri::command]` wrappers over it. That is the
 only part of the app an agent can actually verify, and it is the right shape
 anyway.
 
-### WP-M1-1 — Tauri scaffold · Show · `TODO`
+### WP-M1-1 — Tauri scaffold · Show · `REVIEW`
 
 Tauri v2 in `app/`, vanilla TypeScript + Vite frontend. No framework: the whole
 app is a list, a log panel and six buttons, and M2's xterm.js is
@@ -187,8 +187,14 @@ framework-agnostic. A window that opens and builds is the deliverable.
   passes, and `app/README.md` says how to build.
 - Verify: `cargo check` in the sandbox; `npm run tauri dev` **on the host —
   needs macOS.**
+- 2026-09-09. Observed: `npx tsc --noEmit` clean and `npx vite build` produced
+  `dist/` (58ms) inside the sandbox. Vite was upgraded 5 → 8 during scaffolding
+  because `npm audit` flagged the esbuild dev-server advisory
+  (GHSA-67mh-4wv8-2f99); now `found 0 vulnerabilities`. A dev server any website
+  can talk to is not something this repo ships. **Not yet observed:** the window
+  opening, and `cargo check` — see the Rust status note below.
 
-### WP-M1-2 — binary resolution · Ask · `TODO`
+### WP-M1-2 — binary resolution · Ask · `REVIEW`
 
 The milestone's whole reason for existing. A bundled `.app` launched from Finder
 inherits `launchd`'s `PATH`, not the shell's, so `paddock` and `docker` are
@@ -209,7 +215,7 @@ shell must be the user's own — a resolver that can be pointed at an attacker's
   the one work package that is fully verifiable from inside a sandbox, which is
   why it is worth isolating.
 
-### WP-M1-3 — sandbox list from `ls --json` · Show · `TODO`
+### WP-M1-3 — sandbox list from `ls --json` · Show · `WIP`
 
 Typed Rust structs over the WP-M0-1 contract in `docs/cli-json.md`, rendered as
 the app's main table: container, state, repo, profile, policy, ports.
@@ -235,7 +241,7 @@ resolves, which policy sets, whether a container already exists.
   starting anything.
 - Verify: **needs Docker and macOS.**
 
-### WP-M1-5 — streamed `paddock up` · Show · `TODO`
+### WP-M1-5 — streamed `paddock up` · Show · `WIP`
 
 The spawn → stream → render chain. `paddock up` spawned with piped stdout and
 stderr, lines pushed to the frontend as Tauri events, rendered into a log panel.
@@ -263,15 +269,47 @@ confirmation naming what is lost. `rm` keeps them and does not.
   a confirmation that says the Claude login goes with it.
 - Verify: **needs Docker.**
 
+### Where this stands — 2026-09-09
+
+Written for whoever picks this up next; delete it when M1 closes.
+
+**Done and committed.** `app/` scaffolded: TypeScript + Vite frontend (builds
+clean), and a two-crate cargo workspace under `app/src-tauri` — `paddock-core`
+(no `tauri` dependency, all the logic, ~30 unit tests) and the Tauri shell over
+it. `core/` covers binary resolution (WP-M1-2), the `ls`/`info` contract types
+(WP-M1-3), the exit-code model, and process streaming (WP-M1-5). The frontend
+for 3, 4 and 6 is still the placeholder in `app/src/main.ts`.
+
+**The honest status of the Rust: it has never been compiled.** Not once. The
+sandbox had no `cargo` while it was written. Egress to crates.io opened at the
+end of the session and a toolchain install was started, but nothing in
+`app/src-tauri` has been through `cargo check`, `cargo test` or `clippy`. Treat
+every Rust file as a draft that typechecks in nobody's head but the author's.
+**First action next session: install the toolchain if absent, then
+`cd app/src-tauri && cargo test -p paddock-core`, and fix what falls out before
+writing anything new.**
+
+The Tauri crate itself still will not compile in the sandbox until the image is
+rebuilt with D7's WebKit/GTK packages — see `HOST-TASKS.md`, task 3, which must
+not run while an agent session is live because it destroys the container the
+session runs in.
+
+**Reviews owed.** WP-M1-1 and WP-M1-2 are at `REVIEW` and neither has been
+through the protocol in `AGENTS.md`. WP-M1-2 is classified **Ask**: it decides
+which binary the app executes, so it needs a review agent before it is called
+done, and `docs/reviews/WP-M1-2.md` does not exist yet.
+
 ## M2 — embedded terminal · `TODO`
 
 `portable-pty` + xterm.js with the webgl addon; Claude streams fast enough that
 the DOM renderer stutters. Tabs, resize, and "open in Terminal" as the escape
 hatch.
 
-Carries an open design decision — see *tmux durability* below — that must be
-settled before the transport is written, because it decides whether the terminal
-owns a process or attaches to a session.
+The transport is settled: **attach, do not own** (D5). The terminal attaches to
+a tmux session inside the container rather than owning a `docker exec`, so
+quitting the app leaves the agent running and "open in Terminal" attaches the
+same session instead of a rival one. The image already carries tmux and
+`image/tmux.conf`.
 
 ## M3 — polish and ship · `TODO`
 

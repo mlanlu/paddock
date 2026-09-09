@@ -1,0 +1,32 @@
+[package]
+name = "paddock-app"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+description = "Desktop app for paddock"
+license = "MIT"
+
+# `core` is a separate crate, not a module, so that `cargo test -p paddock-core`
+# compiles without the `tauri` crate and therefore without WebKit/GTK. Agent
+# sessions develop paddock from inside a paddock sandbox; that is the only way
+# the logic is verifiable there.
+[workspace]
+members = ["core"]
+
+[lib]
+name = "paddock_app_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+paddock-core = { path = "core" }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+strip = true
+lto = true
