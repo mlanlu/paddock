@@ -70,7 +70,10 @@ pub enum ResolveError {
     OverrideNotAbsolute { path: PathBuf },
     /// Nothing on any rung. `looked` is every path actually probed, so the
     /// error message can tell the user where to install it or what to set.
-    NotFound { binary: String, looked: Vec<PathBuf> },
+    NotFound {
+        binary: String,
+        looked: Vec<PathBuf>,
+    },
     /// The login shell answered, but with something unusable. Kept distinct
     /// from `NotFound` because it means the user's shell config is the thing
     /// to look at.
@@ -149,25 +152,38 @@ pub fn resolve(
 ) -> Result<Resolved, ResolveError> {
     if let Some(path) = override_path {
         if !path.is_absolute() {
-            return Err(ResolveError::OverrideNotAbsolute { path: path.to_path_buf() });
+            return Err(ResolveError::OverrideNotAbsolute {
+                path: path.to_path_buf(),
+            });
         }
         if probe.is_executable_file(path) {
-            return Ok(Resolved { path: path.to_path_buf(), source: Source::Override });
+            return Ok(Resolved {
+                path: path.to_path_buf(),
+                source: Source::Override,
+            });
         }
-        return Err(ResolveError::OverrideUnusable { path: path.to_path_buf() });
+        return Err(ResolveError::OverrideUnusable {
+            path: path.to_path_buf(),
+        });
     }
 
     let mut looked = Vec::new();
     for (source, dir) in search_dirs(home) {
         let candidate = dir.join(binary);
         if probe.is_executable_file(&candidate) {
-            return Ok(Resolved { path: candidate, source });
+            return Ok(Resolved {
+                path: candidate,
+                source,
+            });
         }
         looked.push(candidate);
     }
 
     match probe.login_shell_lookup(binary) {
-        None => Err(ResolveError::NotFound { binary: binary.to_string(), looked }),
+        None => Err(ResolveError::NotFound {
+            binary: binary.to_string(),
+            looked,
+        }),
         Some(answer) => {
             // The shell prints a path; anything else — a relative path, an
             // alias, a "not found" message, several lines — is refused rather
@@ -175,7 +191,10 @@ pub fn resolve(
             let first = answer.lines().next().unwrap_or("").trim();
             let path = Path::new(first);
             if !first.is_empty() && path.is_absolute() && probe.is_executable_file(path) {
-                Ok(Resolved { path: path.to_path_buf(), source: Source::LoginShell })
+                Ok(Resolved {
+                    path: path.to_path_buf(),
+                    source: Source::LoginShell,
+                })
             } else {
                 Err(ResolveError::LoginShellUnusable {
                     binary: binary.to_string(),
@@ -193,7 +212,9 @@ impl SystemProbe {
     /// `$HOME` as the app sees it. Separate from `Probe` because it is a plain
     /// lookup with nothing to fake.
     pub fn home() -> Option<PathBuf> {
-        std::env::var_os("HOME").map(PathBuf::from).filter(|p| p.is_absolute())
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
     }
 }
 
@@ -214,7 +235,9 @@ impl Probe for SystemProbe {
         // interpolated into a shell string, so it is refused outright rather
         // than quoted — there is no legitimate binary name this rejects.
         if binary.is_empty()
-            || !binary.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            || !binary
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         {
             return None;
         }
@@ -278,7 +301,13 @@ mod tests {
     #[test]
     fn override_wins_over_every_other_rung() {
         let probe = FakeProbe::new(&["/custom/paddock", "/opt/homebrew/bin/paddock"]);
-        let got = resolve("paddock", Some(Path::new("/custom/paddock")), Some(&home()), &probe).unwrap();
+        let got = resolve(
+            "paddock",
+            Some(Path::new("/custom/paddock")),
+            Some(&home()),
+            &probe,
+        )
+        .unwrap();
         assert_eq!(got.path, PathBuf::from("/custom/paddock"));
         assert_eq!(got.source, Source::Override);
     }
@@ -288,15 +317,32 @@ mod tests {
         // The binary exists on a later rung; the override must still fail
         // loudly rather than quietly running a different binary.
         let probe = FakeProbe::new(&["/opt/homebrew/bin/paddock"]);
-        let err = resolve("paddock", Some(Path::new("/custom/paddock")), Some(&home()), &probe).unwrap_err();
-        assert_eq!(err, ResolveError::OverrideUnusable { path: PathBuf::from("/custom/paddock") });
+        let err = resolve(
+            "paddock",
+            Some(Path::new("/custom/paddock")),
+            Some(&home()),
+            &probe,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            ResolveError::OverrideUnusable {
+                path: PathBuf::from("/custom/paddock")
+            }
+        );
     }
 
     #[test]
     fn a_relative_override_is_refused() {
         let probe = FakeProbe::new(&["paddock"]);
-        let err = resolve("paddock", Some(Path::new("paddock")), Some(&home()), &probe).unwrap_err();
-        assert_eq!(err, ResolveError::OverrideNotAbsolute { path: PathBuf::from("paddock") });
+        let err =
+            resolve("paddock", Some(Path::new("paddock")), Some(&home()), &probe).unwrap_err();
+        assert_eq!(
+            err,
+            ResolveError::OverrideNotAbsolute {
+                path: PathBuf::from("paddock")
+            }
+        );
     }
 
     #[test]
@@ -335,7 +381,8 @@ mod tests {
 
     #[test]
     fn the_login_shell_is_the_last_resort() {
-        let probe = FakeProbe::new(&["/weird/prefix/paddock"]).with_shell("/weird/prefix/paddock\n");
+        let probe =
+            FakeProbe::new(&["/weird/prefix/paddock"]).with_shell("/weird/prefix/paddock\n");
         let got = resolve("paddock", None, Some(&home()), &probe).unwrap();
         assert_eq!(got.path, PathBuf::from("/weird/prefix/paddock"));
         assert_eq!(got.source, Source::LoginShell);
@@ -362,7 +409,8 @@ mod tests {
     fn noise_before_the_path_is_refused_rather_than_trimmed() {
         // An rc file that prints a banner makes the first line not-a-path. The
         // shell's answer is a whole, and a partially-parsed one is not trusted.
-        let probe = FakeProbe::new(&["/usr/bin/paddock"]).with_shell("welcome!\n/usr/bin/paddock\n");
+        let probe =
+            FakeProbe::new(&["/usr/bin/paddock"]).with_shell("welcome!\n/usr/bin/paddock\n");
         let err = resolve("paddock", None, Some(&home()), &probe).unwrap_err();
         assert!(matches!(err, ResolveError::LoginShellUnusable { .. }));
     }

@@ -1,0 +1,5 @@
+# Pinned to match the sandbox image (image/Dockerfile, ARG RUST_VERSION), so a
+# host build and an agent's `cargo test` cannot disagree about the compiler.
+[toolchain]
+channel = "1.83.0"
+components = ["clippy", "rustfmt"]

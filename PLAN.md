@@ -280,19 +280,26 @@ it. `core/` covers binary resolution (WP-M1-2), the `ls`/`info` contract types
 (WP-M1-3), the exit-code model, and process streaming (WP-M1-5). The frontend
 for 3, 4 and 6 is still the placeholder in `app/src/main.ts`.
 
-**The honest status of the Rust: it has never been compiled.** Not once. The
-sandbox had no `cargo` while it was written. Egress to crates.io opened at the
-end of the session and a toolchain install was started, but nothing in
-`app/src-tauri` has been through `cargo check`, `cargo test` or `clippy`. Treat
-every Rust file as a draft that typechecks in nobody's head but the author's.
-**First action next session: install the toolchain if absent, then
-`cd app/src-tauri && cargo test -p paddock-core`, and fix what falls out before
-writing anything new.**
+**Verification status, precisely.** `paddock-core` is compiled and green:
+`cargo test -p paddock-core` → 31 passed, `cargo clippy -p paddock-core
+--all-targets -- -D warnings` clean, `cargo fmt --check` clean. Observed
+2026-09-09 in the sandbox, on a rustup toolchain installed into `~/.cargo`
+after the `rust` policy set went live.
 
-The Tauri crate itself still will not compile in the sandbox until the image is
-rebuilt with D7's WebKit/GTK packages — see `HOST-TASKS.md`, task 3, which must
-not run while an agent session is live because it destroys the container the
-session runs in.
+**The Tauri crate has never been compiled.** `app/src-tauri/src/lib.rs` and the
+`tauri.conf.json` next to it are unverified: `cargo check` cannot get past the
+`webkit2gtk-sys` build script in this sandbox, and it will not until the image
+is rebuilt with D7's packages — `HOST-TASKS.md` task 3, which must not run while
+an agent session is live because it destroys the container the session runs in.
+So the Tauri wrappers are a draft. That is also the argument for keeping them
+thin: everything in them that could have been wrong in an interesting way is in
+`core/` instead, where it is tested.
+
+**The toolchain does not survive a container recreation.** It lives in
+`~/.cargo`, which is not volume-backed; the image rebuild is what makes it
+permanent. If `cargo` is missing next session, install it with
+`curl -sSfL https://static.rust-lang.org/rustup/dist/aarch64-unknown-linux-gnu/rustup-init`
+— **not** `sh.rustup.rs`, which does not resolve inside a sandbox.
 
 **Reviews owed.** WP-M1-1 and WP-M1-2 are at `REVIEW` and neither has been
 through the protocol in `AGENTS.md`. WP-M1-2 is classified **Ask**: it decides

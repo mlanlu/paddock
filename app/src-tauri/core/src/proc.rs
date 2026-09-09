@@ -127,14 +127,26 @@ pub fn run_streaming(
 
     let h_out = std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if tx.send(Line { stream: Stream::Stdout, text: line }).is_err() {
+            if tx
+                .send(Line {
+                    stream: Stream::Stdout,
+                    text: line,
+                })
+                .is_err()
+            {
                 break;
             }
         }
     });
     let h_err = std::thread::spawn(move || {
         for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-            if tx_err.send(Line { stream: Stream::Stderr, text: line }).is_err() {
+            if tx_err
+                .send(Line {
+                    stream: Stream::Stderr,
+                    text: line,
+                })
+                .is_err()
+            {
                 break;
             }
         }

@@ -178,7 +178,13 @@ mod tests {
         assert_eq!(s.container, "paddock-openmatch-openmatch-web");
         assert!(s.is_running());
         assert!(!s.closed);
-        assert_eq!(s.ports, vec![Port { host: 3010, container: 3000 }]);
+        assert_eq!(
+            s.ports,
+            vec![Port {
+                host: 3010,
+                container: 3000
+            }]
+        );
         assert_eq!(s.policy.as_ref().unwrap().describe, "github,npm +1");
     }
 
@@ -186,7 +192,10 @@ mod tests {
     fn the_documented_info_example_parses() {
         let got = parse_info(INFO_EXAMPLE).unwrap();
         assert_eq!(got.name, "openmatch-web");
-        assert_eq!(got.common_git.as_deref(), Some("/Users/you/Documents/openmatch/.git"));
+        assert_eq!(
+            got.common_git.as_deref(),
+            Some("/Users/you/Documents/openmatch/.git")
+        );
         assert_eq!(got.provisioned, None);
         assert!(!got.is_new());
         assert!(!got.has_no_profile_of_its_own());
@@ -220,9 +229,17 @@ mod tests {
 
     #[test]
     fn an_open_policy_is_recognised() {
-        let p = Policy { sets: vec!["open".into()], extra: vec![], describe: "open".into() };
+        let p = Policy {
+            sets: vec!["open".into()],
+            extra: vec![],
+            describe: "open".into(),
+        };
         assert!(p.is_open());
-        let p = Policy { sets: vec!["github".into()], extra: vec![], describe: "github".into() };
+        let p = Policy {
+            sets: vec!["github".into()],
+            extra: vec![],
+            describe: "github".into(),
+        };
         assert!(!p.is_open());
     }
 

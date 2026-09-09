@@ -3,6 +3,10 @@
 # `crates.io` is the API and the download redirect target; `index.crates.io` is
 # the sparse index cargo actually reads. Both are needed — cargo fails closed
 # with a bare "failed to fetch" if only one resolves.
+#
+# `sh.rustup.rs` is listed because it is the documented install URL, but it does
+# not resolve from inside a sandbox even with this set applied — fetch
+# `rustup/dist/<target>/rustup-init` from static.rust-lang.org instead.
 static.rust-lang.org
 sh.rustup.rs
 crates.io
