@@ -314,7 +314,7 @@ def build_context(prof: dict) -> Tuple[Path, str]:
     """Docker build context (image files only; policy is applied at start)."""
     ctx = CACHE_DIR / "build" / "sandbox"
     ctx.mkdir(parents=True, exist_ok=True)
-    files = ("Dockerfile", "init-firewall.sh", "init-volumes.sh")
+    files = ("Dockerfile", "init-firewall.sh", "init-volumes.sh", "tmux.conf")
     h = hashlib.sha256()
     for f in files:
         shutil.copy2(IMAGE_DIR / f, ctx / f)

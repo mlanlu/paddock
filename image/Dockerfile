@@ -12,9 +12,10 @@ ENV TZ="$TZ"
 ARG CLAUDE_CODE_VERSION=latest
 ARG GIT_DELTA_VERSION=0.18.2
 ARG ZSH_IN_DOCKER_VERSION=1.2.0
+ARG RUST_VERSION=1.83.0
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-  less git procps sudo fzf zsh man-db unzip gnupg2 gh \
+  less git procps sudo fzf zsh man-db unzip gnupg2 gh tmux \
   iptables ipset iproute2 dnsutils aggregate jq nano vim ripgrep \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -36,9 +37,34 @@ RUN ARCH=$(dpkg --print-architecture) && \
   wget -q "https://github.com/dandavison/delta/releases/download/${GIT_DELTA_VERSION}/git-delta_${GIT_DELTA_VERSION}_${ARCH}.deb" && \
   dpkg -i "git-delta_${GIT_DELTA_VERSION}_${ARCH}.deb" && rm "git-delta_${GIT_DELTA_VERSION}_${ARCH}.deb"
 
+# Tauri's Linux toolchain. The shipped app is macOS-first, but an agent working
+# in the sandbox has no host toolchain, so without these `cargo check` cannot
+# even resolve the `tauri` crate's build script and every Rust line in app/ is
+# written blind. webkit2gtk 4.1 / libsoup 3 are the versions Tauri v2 links
+# against; bookworm's 4.0 packages are for Tauri v1 and will not satisfy it.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  build-essential pkg-config file patchelf \
+  libssl-dev libgtk-3-dev librsvg2-dev \
+  libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev \
+  && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Rust lives in /usr/local, not ~/.cargo: the home directory's persistent
+# subdirectories are volume-backed per sandbox, and a toolchain restored from a
+# stale volume would shadow the image's. World-writable registry and git dirs
+# so `node` can populate the cargo cache without owning the toolchain itself.
+ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+  | sh -s -- -y --no-modify-path --profile minimal --default-toolchain "${RUST_VERSION}" && \
+  chmod -R a+w "$CARGO_HOME" && \
+  "$CARGO_HOME/bin/rustc" --version
+
+# tmux keeps agent sessions alive across a client disconnect; see the file for
+# why the prefix is remapped.
+COPY tmux.conf /etc/tmux.conf
+
 USER node
 ENV NPM_CONFIG_PREFIX=/usr/local/share/npm-global
-ENV PATH=$PATH:/usr/local/share/npm-global/bin
+ENV PATH=$PATH:/usr/local/share/npm-global/bin:/usr/local/cargo/bin
 ENV SHELL=/bin/zsh
 ENV EDITOR=nano
 ENV VISUAL=nano

@@ -1,0 +1,10 @@
+# Rust: rustup toolchain downloads and the crates.io registry.
+#
+# `crates.io` is the API and the download redirect target; `index.crates.io` is
+# the sparse index cargo actually reads. Both are needed — cargo fails closed
+# with a bare "failed to fetch" if only one resolves.
+static.rust-lang.org
+sh.rustup.rs
+crates.io
+index.crates.io
+static.crates.io

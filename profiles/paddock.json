@@ -1,0 +1,4 @@
+{
+  "$comment": "paddock developing itself. The desktop app in app/ is Tauri, so the sandbox needs the crates.io registry on top of the base policy sets.",
+  "policies": ["github", "npm", "rust"]
+}

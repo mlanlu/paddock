@@ -197,19 +197,12 @@ release.
 1. **Adding `sol` to the review class.** `opus` maps to the Agent tool's
    `model: opus`; `sol` maps to nothing this session can see. Reviews run on
    `opus` alone until someone says what `sol` is. Not blocking.
-2. **tmux durability.** `paddock run` is a `docker exec`: quit the app and the
-   agent dies mid-task. Running `claude` under `tmux` inside the container makes
-   sessions survive, lets the app re-attach with scrollback, and makes "open in
-   Terminal" attach *the same* session instead of a rival one. Costs one word in
-   the image's apt list and a small `tmux.conf` so its keybindings stay clear of
-   Claude's. **Decide before M2 starts.**
-3. **Apple Developer account** ($99/yr) for notarization. Without it every
-   install trips Gatekeeper. Decide before M3, not during.
-4. **Rust toolchain for agent sessions.** Agents run inside a paddock sandbox
-   with no `cargo`, so Rust would be written blind from M1 on. A `rust` policy
-   set (`static.rust-lang.org`, `crates.io`, `index.crates.io`) plus Rust in the
-   image would let an agent at least `cargo check`. Worth adding to the repo
-   regardless.
+2. ~~**tmux durability.**~~ **Settled 2026-09-09 — see D5.** Yes.
+3. ~~**Apple Developer account.**~~ **Settled 2026-09-09 — see D6.** No account
+   for now; M3 ships unsigned and documents the gap.
+4. ~~**Rust toolchain for agent sessions.**~~ **Settled 2026-09-09 — see D7.**
+   `policies/rust.txt` plus a pinned toolchain and Tauri's Linux libraries in the
+   image.
 5. **Test infrastructure.** No tests exist, and most paths need a running Docker
    daemon. Revisit when the JSON contracts have a real consumer; until then it
    is scaffolding for one caller.
@@ -236,6 +229,29 @@ the runtime an implementation detail, which removes the argument for keeping the
 UI in Python. Electron bundles its own Chromium and is heavy; SwiftUI is lighter
 still but macOS-only. Tauri gives a real app in the dock, the system WebView, and
 Linux for close to free.
+
+**D5 — the agent runs under tmux; the terminal attaches, it does not own.**
+Settled 2026-09-09 (human). `paddock run` is a `docker exec`, so a client
+disconnect kills the agent mid-task. tmux is one word in the image's apt list
+and `image/tmux.conf`; in exchange sessions survive, the app re-attaches with
+scrollback, and "open in Terminal" attaches *the same* session rather than a
+rival one. M2's transport is therefore attach-to-session, not spawn-and-own.
+
+**D6 — M3 ships unsigned; notarization is a documented gap.** Settled
+2026-09-09 (human). No Apple Developer account for now. The `.dmg`, the Linux
+AppImage/`.deb` and the CI release are built without signing, and the
+notarization step is written into the release docs with the exact commands, so
+buying the account later is a docs-to-CI change and nothing else.
+
+**D7 — Rust and Tauri's Linux libraries live in the sandbox image.** Settled
+2026-09-09 (human). Agents develop paddock from inside a paddock sandbox, which
+has no host toolchain; without this every Rust line in `app/` is written blind.
+`policies/rust.txt` opens the registry, `profiles/paddock.json` selects it, and
+the image carries a pinned toolchain plus webkit2gtk 4.1 / libsoup 3 so
+`cargo check` resolves the `tauri` crate. The toolchain is installed to
+`/usr/local`, not `~/.cargo`, because the home directory's persistent
+subdirectories are volume-backed per sandbox and a stale volume would otherwise
+shadow the image's toolchain.
 
 **D2 — the app shells out to the CLI.** Reimplementing policy resolution in Rust
 would create two implementations of the security model that can drift. Process
