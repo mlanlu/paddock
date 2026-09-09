@@ -381,13 +381,13 @@ def host_port_free(port: int) -> bool:
             return False
 
 
+def port_pairs(label: str) -> List[dict]:
+    """The `paddock.ports` label ("container:host,...") as [{host, container}]."""
+    return [{"host": int(h), "container": int(c)} for c, h in (p.split(":") for p in label.split(",") if p)]
+
+
 def reserved_host_ports() -> set:
-    used = set()
-    for c in all_containers():
-        for pair in (c.get("paddock.ports") or "").split(","):
-            if ":" in pair:
-                used.add(int(pair.split(":")[1]))
-    return used
+    return {p["host"] for c in all_containers() for p in port_pairs(c.get("paddock.ports") or "")}
 
 
 def assign_ports(container_ports: List[int]) -> Dict[int, int]:
@@ -622,10 +622,9 @@ def ensure_up(ws: Workspace, a) -> None:
     else:
         cur = st["policy"]
         info(f"policy: {describe_policy(cur['sets'], cur['extra'])} (unchanged; `paddock firewall` to change)")
-    labels = container_labels(ws.container)
-    ports = labels.get("paddock.ports") or ""
+    ports = port_pairs(container_labels(ws.container).get("paddock.ports") or "")
     if ports:
-        info("ports: " + ", ".join(f"localhost:{p.split(':')[1]} -> {p.split(':')[0]}" for p in ports.split(",")))
+        info("ports: " + ", ".join(f"localhost:{p['host']} -> {p['container']}" for p in ports))
 
 
 def rm_container(ws: Workspace, with_volumes: bool) -> None:
@@ -698,11 +697,6 @@ def cmd_provision(a):
     install_policy(ws, resolve_policy(prof, a.policies, a.allow, plus=PROVISION_POLICIES) if not policy.open else policy)
     provision(ws, prof, env_file_present=env_file_for(profile) is not None)
     install_policy(ws, policy)
-
-
-def port_pairs(label: str) -> List[dict]:
-    """The `paddock.ports` label ("container:host,...") as [{host, container}]."""
-    return [{"host": int(h), "container": int(c)} for c, h in (p.split(":") for p in label.split(",") if p)]
 
 
 def sandbox_rows() -> List[dict]:

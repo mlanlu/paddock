@@ -43,3 +43,12 @@ then a list in the same function.
 → **Acted.** `port_pairs(label)` helper, shared with `cmd_info`; renamed.
 
 Follow-up commit: 179f2db.
+
+## Decision review — opus, 2026-09-09
+
+No decline wrong. **D1**: the reworded `closed` row said DNS-only, but since
+17e8ffc `closed` is also set when GitHub's ranges were unavailable and
+everything else applied. → **Acted.** Row now matches the exit-6 wording.
+**D2**: `policy: null` cause over-specified. → **Acted.** **D3**: two more
+label parses in `reserved_host_ports` and `ensure_up`. → **Acted.** Both use
+`port_pairs`; observed ports line unchanged on `up` and table identical.

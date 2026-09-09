@@ -39,9 +39,9 @@ when there are none (the table prints `no sandboxes`).
 | `repo` | Name of the directory that owns the real `.git`; shared by every worktree of a repo. |
 | `profile` | Profile the sandbox was created with. |
 | `workspace` | Absolute host path of the sandboxed directory. |
-| `closed` | `true` when the last firewall run failed and the sandbox is DNS-only, whatever `policy` says. The table shows `CLOSED (firewall failed)`. |
-| `policy` | The domain policy paddock last tried to apply, or `null` if it has not applied one yet (no state file — the sandbox predates policy persistence). Host-port access (`host_ports`) is not included. |
-| `policy.sets` | The persisted set names, e.g. `["github", "npm"]`. The `claude` set is always added on top and is not listed. `open` anywhere in the list means no firewall. When `closed` is `true` these describe the attempted policy, not what is in effect. |
+| `closed` | `true` when the last policy application did not fully succeed: either the firewall script failed and egress is DNS only, or GitHub's IP ranges were unavailable and everything else applied. Same condition as exit code `6`. The table shows `CLOSED (firewall failed)`. |
+| `policy` | The domain policy paddock last tried to apply, or `null` when paddock has no persisted policy for it. Host-port access (`host_ports`) is not included. |
+| `policy.sets` | The persisted set names, e.g. `["github", "npm"]`. The `claude` set is always added on top and is not listed. `open` anywhere in the list means no firewall. When `closed` is `true` these describe the attempted policy, not necessarily what is in effect. |
 | `policy.extra` | Extra domains from the profile and `--allow`. |
 | `policy.describe` | Human summary of `sets` and `extra`, e.g. `github,npm +1`, `strict`, `open`. |
 | `ports` | Published ports as pairs. `host` is on `127.0.0.1`; `container` is the port inside. Empty list when the profile publishes none. |
