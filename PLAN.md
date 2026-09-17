@@ -63,6 +63,14 @@ cannot run.
   both Codex login methods, confirm Codex API access and blocked unrelated
   egress, switch agents, then check login persistence after `rm`/recreation and
   removal after `reset`. Status remains `REVIEW` until this is observed.
+- The human requested a strict final Astra review before push. It found that a
+  failed provision followed by a successful retry could permanently retain
+  temporary npm/GitHub egress. The intended policy is now persisted separately
+  while provisioning is pending, and retries restore it; see the final review
+  in `docs/reviews/WP-CODEX-1.md`. Focused mocked checks passed for both a
+  failed install and a failed temporary firewall application. A strict Astra
+  re-review of the full change set plus the correction found no further
+  concrete defect. Live checks remain outstanding.
 
 ### WP-CODEX-2 — app contract and preview · Show · `REVIEW`
 
@@ -505,6 +513,13 @@ the documented ChatGPT and API endpoints. Live login and model requests are
 still required before claiming this list is sufficient. The host browser handles
 the device-code page; the container needs the authentication and model-service
 connections.
+
+**D9 — remember the intended policy across provisioning failure.** The
+temporary npm/GitHub policy is the policy actually applied and must remain
+visible in `ls --json` after failure. A separate `pending_policy` in host-side
+state remembers the intended final policy until it applies successfully.
+Retries use it instead of mistaking temporary egress for the user's choice;
+an explicit `firewall` change replaces it. The agent cannot reach host state.
 
 **D1 — Tauri over Electron, SwiftUI, or a local web UI.** A signed `.dmg` makes
 the runtime an implementation detail, which removes the argument for keeping the

@@ -19,3 +19,18 @@ the retry and leave it that way after another failure.
 → **Acted.** The temporary policy now widens the retained policy only by npm
 and GitHub; `provision` uses the same path. Focused checks observed strict
 egress after the agent switch and throughout both provisioning paths.
+
+## Final strict review — GPT-6 Astra, 2026-09-17, commits 24edcd0..bf6cd06
+
+**F2** `paddock:731` — A failed dependency install persisted the temporary
+npm/GitHub policy. A successful retry then treated that policy as the desired
+one and left the sandbox wider than the original strict policy.
+→ **Acted.** The intended policy is now saved separately while provisioning
+is pending. Retries use that policy, and a successful final application clears
+the pending state. Focused checks covered a failed install followed by a
+successful retry and a failed temporary firewall application followed by `up`.
+
+## Final re-review — GPT-6 Astra, 2026-09-17
+
+No further findings in the full change set plus the pending-policy correction.
+The review was static; live Docker and login checks remain in `PLAN.md`.

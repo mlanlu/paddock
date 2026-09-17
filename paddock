@@ -265,9 +265,11 @@ def resolve_policy(prof: dict, sets_override: Optional[str], allow: Optional[str
 
 def policy_for_start(ws: Workspace, prof: dict, sets_override: Optional[str],
                      allow: Optional[str], agent: str) -> Policy:
-    live = load_state(ws.container).get("policy") if container_state(ws.container) == "running" else None
+    state = load_state(ws.container) if container_state(ws.container) == "running" else {}
+    live = state.get("pending_policy") or state.get("policy")
     if sets_override is None and allow is None and live:
-        # A running sandbox keeps its live restrictions when the agent changes.
+        # A running sandbox keeps its restrictions, including the intended
+        # final policy after a failed provisioning attempt.
         return Policy(live["sets"], live["extra"],
                       live.get("host_ports", prof.get("host_ports", [])), agent)
     return resolve_policy(prof, sets_override, allow, agent)
@@ -533,6 +535,14 @@ def install_policy(ws: Workspace, policy: Policy) -> None:
     info(f"policy: {policy.describe()} — {r.stdout.strip().splitlines()[-1] if r.stdout.strip() else 'applied'}")
 
 
+def apply_final_policy(ws: Workspace, policy: Policy) -> None:
+    install_policy(ws, policy)
+    state = load_state(ws.container)
+    if "pending_policy" in state:
+        del state["pending_policy"]
+        save_state(ws.container, state)
+
+
 def provisioned(ws: Workspace) -> bool:
     return exec_in(ws, ["test", "-f", PROVISION_MARKER], check=False, quiet=True) == 0
 
@@ -643,14 +653,16 @@ def ensure_up(ws: Workspace, a) -> None:
     st = load_state(ws.container)
     if not provisioned(ws):
         # Dependency installs may reach registries + GitHub even under a strict
-        # profile, but never the open internet — then the real policy applies.
+        # policy. An explicitly open policy remains open.
+        st["pending_policy"] = policy.to_json()
+        save_state(ws.container, st)
         install_policy(ws, provisioning_policy(policy))
         provision(ws, prof, env_file_present=env_file_for(profile) is not None)
-        install_policy(ws, policy)
-    elif started or explicit or st.get("closed") or not st.get("policy") or st["policy"].get("agent", "claude") != agent:
+        apply_final_policy(ws, policy)
+    elif started or explicit or st.get("closed") or st.get("pending_policy") or not st.get("policy") or st["policy"].get("agent", "claude") != agent:
         # A fresh start returns to the profile policy; a running sandbox keeps
         # whatever `paddock firewall` last set unless flags say otherwise.
-        install_policy(ws, policy)
+        apply_final_policy(ws, policy)
     else:
         cur = st["policy"]
         info(f"policy: {describe_policy(cur['sets'], cur['extra'])} (unchanged; `paddock firewall` to change)")
@@ -719,7 +731,12 @@ def cmd_firewall(a):
     if container_state(ws.container) != "running":
         die(f"{ws.container} is not running", EXIT_NOT_RUNNING)
     _, prof, _ = resolve_profile(ws, a.profile)
-    install_policy(ws, resolve_policy(prof, a.policies, a.allow, active_agent(ws.container)))
+    policy = resolve_policy(prof, a.policies, a.allow, active_agent(ws.container))
+    st = load_state(ws.container)
+    if "pending_policy" in st:
+        st["pending_policy"] = policy.to_json()
+        save_state(ws.container, st)
+    apply_final_policy(ws, policy)
 
 
 def cmd_provision(a):
@@ -729,9 +746,12 @@ def cmd_provision(a):
     profile, prof, _ = resolve_profile(ws, a.profile)
     agent = active_agent(ws.container)
     policy = policy_for_start(ws, prof, a.policies, a.allow, agent)
+    st = load_state(ws.container)
+    st["pending_policy"] = policy.to_json()
+    save_state(ws.container, st)
     install_policy(ws, provisioning_policy(policy))
     provision(ws, prof, env_file_present=env_file_for(profile) is not None)
-    install_policy(ws, policy)
+    apply_final_policy(ws, policy)
 
 
 def sandbox_rows() -> List[dict]:
