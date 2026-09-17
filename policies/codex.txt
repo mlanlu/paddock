@@ -1,0 +1,4 @@
+# Selected for Codex sessions. ChatGPT login and API-key use need separate endpoints.
+chatgpt.com
+auth.openai.com
+api.openai.com

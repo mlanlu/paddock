@@ -6,17 +6,17 @@ work, its status, and the decisions.
 
 **Status:** `TODO` · `WIP` · `REVIEW` · `DONE` · `BLOCKED`
 
-**Review class:** `opus` — the agents allowed to review work packages and to
-review decisions about findings. Keep this list here; do not hardcode it
-elsewhere. `sol` is intended to join the class; it has no known invocation yet,
-so reviews run on `opus` alone until it does.
+**Review class:** `opus`; `gpt-6-astra` for WP-CODEX-1 and WP-CODEX-2, authorized
+by the human on 2026-09-17 because Opus is unavailable in the agent tool and
+the local Claude CLI is not logged in. Keep this list here; do not hardcode it
+elsewhere. `sol` is intended to join the class; it has no known invocation yet.
 
 ---
 
 ## Goal
 
 A desktop app that starts a sandboxed agent session in one click: pick a folder,
-watch it come up, get a terminal on `claude` inside the sandbox — without giving
+watch it come up, get a terminal on Codex (or the selected agent) inside the sandbox — without giving
 up anything the CLI guarantees.
 
 **Tauri** (Rust core, system WebView), macOS Apple Silicon and Linux, terminals
@@ -26,6 +26,51 @@ The CLI stays the engine. The app shells out to `paddock`; it never talks to
 Docker directly. paddock's value is its security model — additive policy
 resolution, root-owned `/etc/paddock`, a fail-closed firewall — and a second
 implementation in Rust would be a second thing that can disagree with the first.
+
+---
+
+## Codex as the default agent · `WIP`
+
+### WP-CODEX-1 — agent image, isolation, and egress · Ask · `REVIEW`
+
+Install Codex in the image, give each sandbox its own `/home/node/.codex`
+volume, and select exactly one built-in agent policy set. `run` defaults to
+Codex and accepts `--agent claude`. Persist the selected agent with the applied
+policy so `firewall` and `provision` retain it; a stopped sandbox starts again
+with Codex. Reapply the policy before switching agents in a running sandbox,
+retaining its live restrictions until restart.
+
+This is **Ask** because policy resolution and container mounts change. Review
+the diff before committing, including the legacy state transition. Verify CLI
+help and forwarded arguments, build inputs, Codex/Claude egress and unrelated
+blocked egress. With Docker, check both Codex login methods, agent switching,
+`rm`/recreation persistence, and `reset` removal. Record what the environment
+cannot run.
+
+- 2026-09-17: two GPT-6 Astra review rounds completed; both findings acted on
+  (`docs/reviews/WP-CODEX-1.md`). The second exposed a provisioning retry that
+  could restore an `open` profile, so provisioning now widens the live policy
+  rather than resolving the profile again.
+- Observed locally: CLI help and `--` forwarding for both agents; Python
+  compilation. Focused Python checks with mocked Docker calls showed exclusive
+  agent service domains, Claude retention through `firewall` and `provision`,
+  a running strict policy staying strict through an agent switch and a
+  failed-provisioning retry, a stopped sandbox starting with Codex, image
+  build inputs including Codex, and separate named agent mounts with no host
+  Codex directory.
+- **Needs host verification:** Docker daemon was unavailable even with host
+  socket access (`Cannot connect to the Docker daemon`). Build the image, use
+  both Codex login methods, confirm Codex API access and blocked unrelated
+  egress, switch agents, then check login persistence after `rm`/recreation and
+  removal after `reset`. Status remains `REVIEW` until this is observed.
+
+### WP-CODEX-2 — JSON contract, app preview, and setup docs · Show · `WIP`
+
+Expose `policy.agent` in `ls --json` and `info --json`, update the Rust and
+TypeScript views, show the agent in the app's policy preview, and name both
+login volumes in the reset warning. Document the CLI commands and one-time
+container login. Verify JSON examples parse for both agents and run the app's
+available type checks.
 
 ---
 
@@ -264,12 +309,12 @@ code, not "it failed".
 
 The three lifecycle buttons, reusing WP-M1-5's streaming.
 
-`reset` destroys volumes — `node_modules` and the Claude login — so it gets a
+`reset` destroys volumes — `node_modules` and both agent logins — so it gets a
 confirmation naming what is lost. `rm` keeps them and does not.
 
 - Touches: frontend, `app/src-tauri/src/core/cli.rs`.
 - Done when: all three run and the list refreshes; `reset` cannot fire without
-  a confirmation that says the Claude login goes with it.
+  a confirmation that says both agent logins go with it.
 - Verify: **needs Docker.**
 
 ### Where this stands — 2026-09-09
@@ -329,7 +374,8 @@ same session instead of a rival one. The image already carries tmux and
 
 The hinge. `cmd_run` currently `docker exec`s `claude` directly, so the agent
 dies with the client. It should instead run
-`tmux new-session -A -s <session> claude --dangerously-skip-permissions …`,
+`tmux new-session -A -s <session> codex --dangerously-bypass-approvals-and-sandbox …`
+by default, with Claude selected through `--agent claude`,
 which attaches to the session if it exists and creates it if it does not.
 
 This has to live in the **CLI**, not the app. If only the app knew about tmux,
@@ -340,14 +386,18 @@ container is one workspace, so a fixed session name inside it is enough.
 Known trap, to be handled rather than discovered: with `-A`, when the session
 already exists tmux **ignores the command and its arguments**. So
 `paddock run -- --model X` against a live session silently drops the flag. Say
-so, rather than pretending it applied.
+so, rather than pretending it applied. A request to switch agents must also
+replace or reject an existing session of the other agent before changing its
+firewall; attaching to the old process under the new service policy would be
+misleading and break its API access.
 
 - Touches: `paddock` (`cmd_run`), `README.md`, `image/tmux.conf` if it needs
   adjusting.
 - Done when: quitting the client leaves the agent running; a second `paddock
   run` re-attaches with scrollback intact; passing arguments to an existing
   session warns instead of silently dropping them.
-- Verify: `paddock run`, detach, confirm `claude` still runs, re-attach.
+- Verify: `paddock run`, detach, confirm Codex still runs, re-attach; check
+  agent switching while a session exists.
   **Needs Docker, and needs the image rebuilt with tmux (HOST-TASKS.md task 3).**
 
 ### WP-M2-2 — PTY transport · Show · `TODO`
@@ -379,7 +429,7 @@ reflowing without telling the PTY leaves the agent rendering to the old width,
 which is how a full-width TUI ends up drawing over itself.
 
 - Touches: `app/src/terminal.ts`, `app/src-tauri/core/src/pty.rs`.
-- Done when: resizing the window reflows Claude's UI correctly, including after
+- Done when: resizing the window reflows the agent's UI correctly, including after
   a detach and re-attach.
 - Verify: **needs macOS.**
 
@@ -434,6 +484,15 @@ release.
 ---
 
 ## Decisions
+
+**D8 — selected service egress.** `codex.txt` starts with `chatgpt.com`,
+`auth.openai.com`, and `api.openai.com`; Claude's existing set remains separate.
+The Codex CLI documentation confirms the external-enclosure flag and the two
+login paths, while the exact minimal service domain list is an inference from
+the documented ChatGPT and API endpoints. Live login and model requests are
+still required before claiming this list is sufficient. The host browser handles
+the device-code page; the container needs the authentication and model-service
+connections.
 
 **D1 — Tauri over Electron, SwiftUI, or a local web UI.** A signed `.dmg` makes
 the runtime an implementation detail, which removes the argument for keeping the

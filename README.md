@@ -1,11 +1,12 @@
 # paddock
 
-An enclosure for coding agents. Run `claude --dangerously-skip-permissions` inside a Docker sandbox that only sees one workspace directory, has default-deny egress, carries no host credentials, and has no Docker socket. Policy lives outside the repo, so the agent cannot loosen its own sandbox.
+An enclosure for coding agents. Run Codex by default, or Claude with `--agent claude`, inside a Docker sandbox that only sees one workspace directory, has default-deny egress, carries no host credentials, and has no Docker socket. Policy lives outside the repo, so the agent cannot loosen its own sandbox.
 
 One sandbox per workspace directory. Want several agents in parallel? Give each its own directory — git worktrees are one convenient way to do that, but a plain clone works exactly the same, and nothing forces you into worktrees.
 
 ```
-paddock run ~/code/myrepo            # build (first time), start, drop into claude --dangerously-skip-permissions
+paddock run ~/code/myrepo            # build (first time), start Codex
+paddock run ~/code/myrepo --agent claude  # use Claude in the same enclosure
 paddock run ~/code/myrepo-feature    # a second sandbox, e.g. for a worktree, with its own ports
 paddock ls
 ```
@@ -15,11 +16,11 @@ paddock ls
 | | |
 |---|---|
 | **Filesystem** | The workspace directory, bind-mounted at its real path. For a linked git worktree, also the repo's shared `.git` (found via `git rev-parse --git-common-dir`, mounted at its real path so the worktree pointer resolves). Nothing else from the host. |
-| **Network** | Default-deny egress (iptables/ipset), fail-closed. What's allowed is the union of the profile's **policy sets** (`github`, `npm`, `pypi`, …; the Anthropic API is always on), its extra `domains`, and ad-hoc `--allow` hosts. Written into the root-owned `/etc/paddock` by paddock at every start — the agent can't touch it; you can retighten or loosen a running sandbox with `paddock firewall`. |
+| **Network** | Default-deny egress (iptables/ipset), fail-closed. What's allowed is the union of the selected agent's service set, the profile's **policy sets** (`github`, `npm`, `pypi`, …), its extra `domains`, and ad-hoc `--allow` hosts. Written into the root-owned `/etc/paddock` by paddock at every start — the agent can't touch it; you can retighten or loosen a running sandbox with `paddock firewall`. |
 | **Host** | `host.docker.internal` only on the TCP ranges in the profile's `host_ports` (e.g. a local Supabase / Postgres). No Docker socket. |
-| **Credentials** | Only what's in `~/.config/paddock/env/<profile>.env` (a fine-grained GitHub PAT, optional Claude token, project keys). `~/.claude`, `~/.config/gh`, `~/.ssh` are never mounted. Claude's login persists on a per-sandbox volume. |
+| **Credentials** | Only what's in `~/.config/paddock/env/<profile>.env` (a fine-grained GitHub PAT and optional project keys). Host `~/.codex`, `~/.claude`, `~/.config/gh`, and `~/.ssh` are never mounted as credential stores. Codex and Claude logins persist on separate per-sandbox volumes. |
 | **Privileges** | Runs as `node`. `sudo` works for exactly two root-owned scripts: re-applying the firewall and fixing volume ownership. |
-| **Tooling** | Node (version from the profile), corepack, `gh`, `claude`, git + delta, ripgrep, zsh. |
+| **Tooling** | Node (version from the profile), corepack, `gh`, `codex`, `claude`, git + delta, ripgrep, zsh. |
 
 ## Install
 
@@ -37,7 +38,18 @@ cd ~/code/myrepo
 paddock init          # writes ~/.config/paddock/profiles/<repo>.json + env/<repo>.env, prints what it detected
 ```
 
-Fill in the env file (at least `GH_TOKEN`, a fine-grained PAT scoped to that repo) and adjust the profile. Then `paddock run`.
+Fill in the env file (at least `GH_TOKEN`, a fine-grained PAT scoped to that repo) and adjust the profile. Then sign in to Codex once inside the sandbox:
+
+```bash
+paddock shell
+codex login --device-auth
+# Or, with OPENAI_API_KEY supplied inside the container:
+printenv OPENAI_API_KEY | codex login --with-api-key
+exit
+paddock run
+```
+
+Device code login may need enabling in your ChatGPT security settings or by a workspace admin. [OpenAI's authentication guide](https://learn.chatgpt.com/docs/auth) describes both methods. The login is stored in the sandbox's Codex volume; `paddock rm` keeps it and `paddock reset` removes it. Do not mount your host Codex directory. An existing container needs `paddock rm` then `paddock up` to acquire the new image and Codex volume; its Claude volume survives.
 
 The profile name defaults to the repo's directory name (for worktrees: the directory that owns the real `.git`, so all worktrees share one profile). Override with `--profile`.
 
@@ -68,11 +80,12 @@ The profile name defaults to the repo's directory name (for worktrees: the direc
 
 ### Egress policy: modes that compose
 
-Policy sets are plain files in [`policies/`](policies/) (override or add your own in `~/.config/paddock/policies/`):
+Policy sets are plain files in [`policies/`](policies/) (override or add your own in `~/.config/paddock/policies/`). See the [policy set guide](policies/README.md) for the selected agent's set:
 
 | set | allows | note |
 |---|---|---|
-| `claude` | api.anthropic.com, sentry, statsig | always on — Claude Code can't run without it |
+| `codex` | chatgpt.com, auth.openai.com, api.openai.com | automatically selected for Codex |
+| `claude` | api.anthropic.com, sentry, statsig | automatically selected for Claude |
 | `github` | GitHub's published IP ranges + release asset hosts | git over HTTPS, `gh`, release downloads |
 | `npm` | registry.npmjs.org, registry.yarnpkg.com | npm / pnpm / yarn / corepack |
 | `pypi` | pypi.org, files.pythonhosted.org | pip / uv |
@@ -81,11 +94,12 @@ Policy sets are plain files in [`policies/`](policies/) (override or add your ow
 | `vscode` | marketplace + server download | VS Code *Attach to Running Container* |
 | `open` | everything | no firewall; for trusted tasks |
 
-The effective policy is **additive**: the union of the profile's `policies`, its `domains`, and any `--allow` hosts. To tighten, leave a set out. A policy set with flags stays in force while the sandbox runs; a fresh start returns to the profile's. `paddock ls` shows what each sandbox currently has (or `CLOSED` if the last policy application did not fully succeed — see [`docs/cli-json.md`](docs/cli-json.md)). Some useful modes:
+The effective policy is **additive**: the union of the selected agent's service set, the profile's `policies`, its `domains`, and any `--allow` hosts. To tighten, leave a set out. Switching agents with `run` reapplies the firewall before launch; `firewall` and `provision` retain the running agent. A policy set with flags stays in force while the sandbox runs; a fresh start returns to the profile's policy with Codex. `paddock ls` shows what each sandbox currently has (or `CLOSED` if the last policy application did not fully succeed — see [`docs/cli-json.md`](docs/cli-json.md)). Some useful modes:
 
 ```bash
 paddock run                             # profile policy, e.g. github + npm
-paddock run --policies ''               # strict: Anthropic API only. The agent edits; you review and push from the host
+paddock run --policies ''               # strict: selected agent service only. The agent edits; you review and push from the host
+paddock run --agent claude              # switch service access to Claude before launch
 paddock run --policies npm              # installs allowed, no GitHub — no git push, no curl | bash from raw.githubusercontent.com
 paddock run --allow api.stripe.com      # one-off extra host
 paddock firewall --policies github,npm  # re-tighten/loosen a RUNNING sandbox, no restart; sticks until the next stop/start
@@ -94,7 +108,7 @@ paddock run --policies open             # no firewall
 
 **Why no deny list?** The firewall matches IPs, and hosts share them: `raw.githubusercontent.com` and `gist.github.com` sit in the same ranges as `github.com` and `api.github.com`. A sandbox that can `git push` can also fetch a script from a raw URL — you can't allow one and deny the other at this layer. So GitHub is all-or-nothing, and paddock doesn't offer a `deny` that would only work for hosts with dedicated IPs. Exact per-hostname control needs an L7 filtering proxy in front of the sandbox; that's the natural next mode.
 
-**Dependency installs** during provisioning run with the profile policy widened by `npm` + `github` (never the open internet), then the real policy is applied. Provisioning happens once per **container**: a stopped sandbox restarts without it, but `paddock rm` followed by `paddock up` builds a fresh container and provisions that one too (cheap — the `node_modules` volumes survive). `paddock provision` re-runs it on demand.
+**Dependency installs** during provisioning run with the active policy widened by `npm` + `github`, then that policy is restored. On a first start the active policy comes from the profile; on a running sandbox with no new policy flags it is the live policy. An explicitly `open` policy stays open. Provisioning happens once per **container**: a stopped sandbox restarts without it, but `paddock rm` followed by `paddock up` builds a fresh container and provisions that one too (cheap — the `node_modules` volumes survive). `paddock provision` re-runs it on demand.
 
 **Ports.** Each sandbox publishes the profile's `ports` on `127.0.0.1`. The first sandbox of a profile gets them 1:1 (`3000→3000`), the next gets `+10` (`3010→3000`), and so on, so two worktrees can both run `next dev` on 3000. `${port:N}` in `env` resolves to the host port, which is what browser-side URLs need. `paddock ls` shows the mapping.
 
@@ -114,14 +128,14 @@ Project-level `.claude/` (commands, settings) comes along with the checkout as u
 
 ```
 paddock up      [PATH] [-p PROFILE] [--rebuild]   build image if needed, create/start
-paddock run     [PATH] [-p PROFILE] [-- args]     up + claude --dangerously-skip-permissions
+paddock run     [PATH] [-p PROFILE] [--agent codex|claude] [-- args]   up + selected agent
 paddock shell   [PATH]                            up + zsh
 paddock exec    [PATH] -- <cmd>                   up + run a command inside
                 (up/run/shell/exec also take --policies and --allow)
 paddock ls      [--json]                          sandboxes, state, ports, workspaces
 paddock stop    [PATH]
 paddock rm      [PATH]                            remove container, keep volumes
-paddock reset   [PATH]                            remove container + volumes (node_modules, Claude login)
+paddock reset   [PATH]                            remove container + volumes (node_modules, both logins)
 paddock firewall [PATH] [--policies ..] [--allow ..]   re-apply egress policy to a running sandbox
 paddock provision [PATH]                          re-run first-start provisioning (deps install)
 paddock info    [PATH] [-p PROFILE] [--json]      resolve a path: repo, container, profile, state; changes nothing
@@ -130,9 +144,15 @@ paddock init    [PATH] [-p PROFILE] [--force]     write profile + env skeleton
 
 `PATH` defaults to the current directory; any directory inside a checkout works. `--json` shapes and exit codes are documented in [`docs/cli-json.md`](docs/cli-json.md).
 
+`run` invokes Codex with `--dangerously-bypass-approvals-and-sandbox`, or
+Claude with `--dangerously-skip-permissions`. This relies on paddock's external
+enclosure; [the Codex CLI reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli)
+describes the Codex flag for such environments. Arguments after `--` go to the
+selected agent, for example `paddock run --agent claude -- --model sonnet`.
+
 ## How it works
 
-- **One image** (`paddock/sandbox:node<version>`), rebuilt automatically when the Dockerfile or scripts change (content hash in a label). `--rebuild` forces a no-cache build. Policy is not in the image.
+- **One image** (`paddock/sandbox:node<version>`), rebuilt automatically when the Dockerfile or scripts change (content hash in a label). `--rebuild` forces a no-cache build. Policy is not in the image. See [image details](image/README.md).
 - **Container per workspace**, named `paddock-<repo>[-<dir>]`, labelled with workspace, profile and port map. `up` is idempotent; a stopped sandbox is restarted and the firewall re-applied.
 - **A container's first start** provisions: chowns the volume mountpoints, sets `safe.directory` and `gc.worktreePruneExpire=never` (so an agent's `git worktree prune` can't drop your unmounted sibling worktrees), activates the `packageManager` from `package.json` via corepack, runs the install command, and wires `gh` as git's credential helper if `GH_TOKEN` is set.
 - **Every start** paddock writes the resolved policy (mode, domains, GitHub flag, host ports) into the root-owned `/etc/paddock` via `docker exec -u root`, then runs [`image/init-firewall.sh`](image/init-firewall.sh): DROP policies and the fixed rules first, then resolve the allowlist into an ipset, then verify that `example.com` is unreachable. **Fail-closed**: if resolution fails (no network), the sandbox is left with DNS only and paddock tells you to `paddock firewall` once the network is back.
@@ -149,7 +169,7 @@ paddock init    [PATH] [-p PROFILE] [--force]     write profile + env skeleton
 ## The desktop app
 
 [`app/`](app/) is a Tauri front end for this CLI: pick a folder, watch its
-sandbox come up, and get a terminal on `claude` inside it. It is in progress —
+sandbox come up, and get a terminal on the selected agent inside it. It is in progress —
 see [`PLAN.md`](PLAN.md) for what is built and what is not, and
 [`app/README.md`](app/README.md) for how to build it.
 

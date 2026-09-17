@@ -23,6 +23,7 @@ when there are none (the table prints `no sandboxes`).
     "workspace": "/Users/you/Documents/openmatch-web",
     "closed": false,
     "policy": {
+      "agent": "claude",
       "sets": ["github", "npm"],
       "extra": ["fonts.googleapis.com"],
       "describe": "github,npm +1"
@@ -41,7 +42,8 @@ when there are none (the table prints `no sandboxes`).
 | `workspace` | Absolute host path of the sandboxed directory. |
 | `closed` | `true` when the last policy application did not fully succeed: either the firewall script failed and egress is DNS only, or GitHub's IP ranges were unavailable and everything else applied. Same condition as exit code `6`. The table shows `CLOSED (policy not fully applied)`. |
 | `policy` | The domain policy paddock last tried to apply, or `null` when paddock has no persisted policy for it. Host-port access (`host_ports`) is not included. |
-| `policy.sets` | The persisted set names, e.g. `["github", "npm"]`. The `claude` set is always added on top and is not listed. `open` anywhere in the list means no firewall. When `closed` is `true` these describe the attempted policy, not necessarily what is in effect. |
+| `policy.agent` | Selected agent, `codex` or `claude`. Its service set is added on top of `sets`. For legacy running sandboxes with no agent in state, paddock reports `claude`. |
+| `policy.sets` | The persisted set names, e.g. `["github", "npm"]`. The selected agent's service set is added on top and is not listed. `open` anywhere in the list means no firewall. When `closed` is `true` these describe the attempted policy, not necessarily what is in effect. |
 | `policy.extra` | Extra domains from the profile and `--allow`. |
 | `policy.describe` | Human summary of `sets` and `extra`, e.g. `github,npm +1`, `strict`, `open`. |
 | `ports` | Published ports as pairs. `host` is on `127.0.0.1`; `container` is the port inside. Empty list when the profile publishes none. |
@@ -69,7 +71,7 @@ profile lookup, which needs no Docker.
   "state": "exited",
   "provisioned": null,
   "ports": [{"host": 3010, "container": 3000}],
-  "policy": {"sets": ["github", "npm"], "extra": [], "describe": "github,npm"}
+  "policy": {"agent": "codex", "sets": ["github", "npm"], "extra": [], "describe": "github,npm"}
 }
 ```
 
@@ -86,7 +88,7 @@ profile lookup, which needs no Docker.
 | `state` | Docker's state string for the container, or `null` when it does not exist. |
 | `provisioned` | Whether first-start provisioning has run. Only knowable for a running container (it is a `docker exec`); `null` otherwise. |
 | `ports` | Published port pairs, as in `ls`. For an existing container, the actual mapping; otherwise the mapping `up` would assign right now, which may differ by the time `up` runs. |
-| `policy` | The profile's egress policy, as `up` applies it on a fresh start: `sets`, `extra`, `describe` as in `ls`. `--policies`/`--allow` are not consulted; a running sandbox may carry a different live policy, which `ls --json` reports. There is no `closed` here — that is a fact about a live sandbox and lives on the `ls` row. |
+| `policy` | The profile's egress policy for a fresh start with Codex: `agent`, `sets`, `extra`, `describe` as in `ls`. `--policies`/`--allow` are not consulted; a running sandbox may carry a different live policy, which `ls --json` reports. There is no `closed` here — that is a fact about a live sandbox and lives on the `ls` row. |
 
 ## Exit codes
 
@@ -99,7 +101,7 @@ differently get their own code; everything else is `1`.
 | `2` | Usage error: unknown command or flag, `exec` without a command. argparse owns this code. The Docker check runs first, so without Docker even a usage error is `3`. | Bug in the caller. |
 | `3` | Docker is not on `PATH` or the daemon is not running. Every command except `init` checks this first. | Offer to start Docker Desktop. |
 | `4` | Configuration missing or wrong: a `--profile` that does not exist, a policy set named by the profile or `--policies` that does not exist, invalid JSON in a profile, a bad `${…}` template in its `env`, or a `mounts` source that does not exist. | Offer `paddock init` or open the config directory. |
-| `5` | Provisioning failed (dependency install, corepack, …). The sandbox is running on the **provisioning** policy, which is the profile policy widened by `npm` and `github`, and stays that way until `paddock provision` succeeds. | Offer `paddock provision` after the network is fixed; show the sandbox as wider than its profile until then. |
+| `5` | Provisioning failed (dependency install, corepack, …). The sandbox is running on the **provisioning** policy: the active policy widened by `npm` and `github`. On a first start this is the profile policy; on a running sandbox without new policy flags it is the live policy. It stays until `paddock provision` succeeds. | Offer `paddock provision` after the network is fixed; show the sandbox as wider than its normal policy until then. |
 | `6` | The policy could not be fully applied and the sandbox is CLOSED: either the firewall script failed and egress is DNS only, or GitHub's IP ranges could not be fetched and the firewall was applied without them (the `githubusercontent.com` hostnames in the set still resolve). If this happened during provisioning the live policy is the provisioning-widened one, as for `5`. `ls --json` reports `closed: true`. | Offer `paddock firewall` once the network is back. |
 | `7` | The command needs a running sandbox (`firewall`, `provision`) and there is none. | Offer `paddock up`. |
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """paddock — an enclosure for coding agents.
 
-Runs Claude Code with --dangerously-skip-permissions inside a Docker sandbox
+Runs Codex (or Claude Code) inside a Docker sandbox
 that only sees one workspace directory, has default-deny egress, no host
 credentials, and no Docker socket. One sandbox per workspace directory; a git
 worktree is one way to get several, a plain clone works the same.
@@ -38,8 +38,9 @@ POLICY_DIR = "/etc/paddock"
 PROVISION_MARKER = f"{POLICY_DIR}/provisioned"
 HOST_CLAUDE = Path.home() / ".claude"
 CONTAINER_CLAUDE = "/home/node/.claude"
+CONTAINER_CODEX = "/home/node/.codex"
 PORT_STEP = 10  # host ports for the 2nd sandbox of a profile are +10, 3rd +20, ...
-PROVISION_POLICIES = ["npm", "github"]  # what dependency installs may reach, on top of the profile
+PROVISION_POLICIES = ["npm", "github"]  # what dependency installs may reach, on top of the active policy
 
 
 # ----------------------------------------------------------------------------- util
@@ -220,12 +221,13 @@ class Policy:
     profile's extra domains and any ad-hoc --allow domains. Additive only —
     at the IP layer there is no reliable 'deny this one host'."""
 
-    def __init__(self, sets: List[str], extra: List[str], host_ports: List[str]):
+    def __init__(self, sets: List[str], extra: List[str], host_ports: List[str], agent: str):
         self.sets = list(dict.fromkeys(sets))
+        self.agent = agent
         self.open = "open" in self.sets
         self.github = False
         domains: List[str] = []
-        for name in ["claude"] + [s for s in self.sets if s != "open"]:
+        for name in [agent] + [s for s in self.sets if s != "open"]:
             path = find_in_config("policies", name, ".txt")
             if path is None:
                 die(f"policy set '{name}' not found in {CONFIG_DIR / 'policies'} or {PADDOCK_DIR / 'policies'}", EXIT_CONFIG)
@@ -243,7 +245,7 @@ class Policy:
         return describe_policy(self.sets, self.extra)
 
     def to_json(self) -> dict:
-        return {"sets": self.sets, "extra": self.extra, "host_ports": self.host_ports}
+        return {"sets": self.sets, "extra": self.extra, "host_ports": self.host_ports, "agent": self.agent}
 
 
 def describe_policy(sets: List[str], extra: List[str]) -> str:
@@ -255,11 +257,39 @@ def describe_policy(sets: List[str], extra: List[str]) -> str:
     return s + (f" +{len(extra)}" if extra else "")
 
 
-def resolve_policy(prof: dict, sets_override: Optional[str], allow: Optional[str], plus: List[str] = ()) -> Policy:
+def resolve_policy(prof: dict, sets_override: Optional[str], allow: Optional[str], agent: str) -> Policy:
     sets = [s for s in sets_override.split(",") if s] if sets_override is not None else list(prof.get("policies", []))
-    sets += list(plus)
     extra = list(prof.get("domains", [])) + ([d for d in allow.split(",") if d] if allow else [])
-    return Policy(sets, extra, prof.get("host_ports", []))
+    return Policy(sets, extra, prof.get("host_ports", []), agent)
+
+
+def policy_for_start(ws: Workspace, prof: dict, sets_override: Optional[str],
+                     allow: Optional[str], agent: str) -> Policy:
+    live = load_state(ws.container).get("policy") if container_state(ws.container) == "running" else None
+    if sets_override is None and allow is None and live:
+        # A running sandbox keeps its live restrictions when the agent changes.
+        return Policy(live["sets"], live["extra"],
+                      live.get("host_ports", prof.get("host_ports", [])), agent)
+    return resolve_policy(prof, sets_override, allow, agent)
+
+
+def provisioning_policy(policy: Policy) -> Policy:
+    if policy.open:
+        return policy
+    return Policy(policy.sets + PROVISION_POLICIES, policy.extra, policy.host_ports, policy.agent)
+
+
+def active_agent(container: str) -> str:
+    """A running legacy sandbox has Claude egress; a fresh start uses Codex."""
+    if container_state(container) != "running":
+        return "codex"
+    policy = load_state(container).get("policy")
+    if not policy:
+        return "codex"
+    agent = policy.get("agent", "claude")
+    if agent not in ("codex", "claude"):
+        die(f"invalid agent in policy state for {container}: {agent}", EXIT_CONFIG)
+    return agent
 
 
 GITHUB_META_TTL = 24 * 3600
@@ -562,6 +592,7 @@ def create_container(ws: Workspace, profile: str, prof: dict, tag: str) -> None:
            "-e", f"PADDOCK_WORKSPACE={ws.root}",
            "-v", f"{ws.root}:{ws.root}",
            "-v", f"{volume_name(ws, 'claude')}:{CONTAINER_CLAUDE}",
+           "-v", f"{volume_name(ws, 'codex')}:{CONTAINER_CODEX}",
            "-v", f"{volume_name(ws, 'history')}:{HISTORY_DIR}",
            "-v", "paddock-pnpm-store:/home/node/.local/share/pnpm/store"]
     if ws.common_git:
@@ -590,11 +621,12 @@ def create_container(ws: Workspace, profile: str, prof: dict, tag: str) -> None:
 
 def ensure_up(ws: Workspace, a) -> None:
     profile, prof, ppath = resolve_profile(ws, a.profile)
+    state = container_state(ws.container)
+    agent = getattr(a, "agent", None) or active_agent(ws.container)
     sets_override = getattr(a, "policies", None)
     allow = getattr(a, "allow", None)
     explicit = sets_override is not None or allow is not None
-    policy = resolve_policy(prof, sets_override, allow)
-    state = container_state(ws.container)
+    policy = policy_for_start(ws, prof, sets_override, allow, agent)
     started = False
     if state is None:
         tag = ensure_image(prof, force=getattr(a, "rebuild", False))
@@ -604,7 +636,7 @@ def ensure_up(ws: Workspace, a) -> None:
     else:
         _, current_hash = build_context(prof)
         if getattr(a, "rebuild", False) or image_hash(image_tag(prof)) != current_hash:
-            info("image inputs changed since this sandbox was created — `paddock reset` then `paddock up` to pick them up")
+            info("image inputs changed since this sandbox was created — `paddock rm` then `paddock up` to pick them up (volumes kept)")
         if state != "running":
             docker("start", ws.container)
             started = True
@@ -612,10 +644,10 @@ def ensure_up(ws: Workspace, a) -> None:
     if not provisioned(ws):
         # Dependency installs may reach registries + GitHub even under a strict
         # profile, but never the open internet — then the real policy applies.
-        install_policy(ws, resolve_policy(prof, sets_override, allow, plus=PROVISION_POLICIES) if not policy.open else policy)
+        install_policy(ws, provisioning_policy(policy))
         provision(ws, prof, env_file_present=env_file_for(profile) is not None)
         install_policy(ws, policy)
-    elif started or explicit or st.get("closed") or not st.get("policy"):
+    elif started or explicit or st.get("closed") or not st.get("policy") or st["policy"].get("agent", "claude") != agent:
         # A fresh start returns to the profile policy; a running sandbox keeps
         # whatever `paddock firewall` last set unless flags say otherwise.
         install_policy(ws, policy)
@@ -652,7 +684,9 @@ def cmd_up(a):    ensure_up(Workspace(Path(a.path)), a)
 
 def cmd_run(a):
     ws = Workspace(Path(a.path)); ensure_up(ws, a)
-    sys.exit(exec_in(ws, ["claude", "--dangerously-skip-permissions", *a.args], tty=True, check=False))
+    command = (["codex", "--dangerously-bypass-approvals-and-sandbox"] if a.agent == "codex"
+               else ["claude", "--dangerously-skip-permissions"])
+    sys.exit(exec_in(ws, [*command, *a.args], tty=True, check=False))
 
 
 def cmd_shell(a):
@@ -685,7 +719,7 @@ def cmd_firewall(a):
     if container_state(ws.container) != "running":
         die(f"{ws.container} is not running", EXIT_NOT_RUNNING)
     _, prof, _ = resolve_profile(ws, a.profile)
-    install_policy(ws, resolve_policy(prof, a.policies, a.allow))
+    install_policy(ws, resolve_policy(prof, a.policies, a.allow, active_agent(ws.container)))
 
 
 def cmd_provision(a):
@@ -693,8 +727,9 @@ def cmd_provision(a):
     if container_state(ws.container) != "running":
         die(f"{ws.container} is not running — `paddock up` first", EXIT_NOT_RUNNING)
     profile, prof, _ = resolve_profile(ws, a.profile)
-    policy = resolve_policy(prof, a.policies, a.allow)
-    install_policy(ws, resolve_policy(prof, a.policies, a.allow, plus=PROVISION_POLICIES) if not policy.open else policy)
+    agent = active_agent(ws.container)
+    policy = policy_for_start(ws, prof, a.policies, a.allow, agent)
+    install_policy(ws, provisioning_policy(policy))
     provision(ws, prof, env_file_present=env_file_for(profile) is not None)
     install_policy(ws, policy)
 
@@ -708,7 +743,8 @@ def sandbox_rows() -> List[dict]:
         policy = None
         if pol:
             sets, extra = pol.get("sets", []), pol.get("extra", [])
-            policy = {"sets": sets, "extra": extra, "describe": describe_policy(sets, extra)}
+            policy = {"sets": sets, "extra": extra, "describe": describe_policy(sets, extra),
+                      "agent": pol.get("agent", "claude")}
         out.append({"container": c["name"], "state": c["state"], "repo": c.get("paddock.repo", ""),
                     "profile": c.get("paddock.profile", ""), "workspace": c.get("paddock.workspace", ""),
                     "closed": bool(st.get("closed")), "policy": policy,
@@ -739,7 +775,7 @@ def cmd_info(a):
     """Resolve a path the way `up` would, without touching anything."""
     ws = Workspace(Path(a.path))
     profile, prof, ppath = resolve_profile(ws, a.profile)
-    policy = resolve_policy(prof, None, None)
+    policy = resolve_policy(prof, None, None, "codex")
     state = container_state(ws.container)
     if state is None:
         ports = [{"host": h, "container": c} for c, h in assign_ports([int(p) for p in prof.get("ports", [])]).items()]
@@ -752,7 +788,8 @@ def cmd_info(a):
            "env_file": str(ef) if ef else None,
            "state": state, "provisioned": provisioned(ws) if state == "running" else None,
            "ports": ports,
-           "policy": {"sets": policy.sets, "extra": policy.extra, "describe": policy.describe()}}
+           "policy": {"sets": policy.sets, "extra": policy.extra, "describe": policy.describe(),
+                      "agent": policy.agent}}
     if a.json:
         print(json.dumps(out, indent=2)); return
     for k, v in out.items():
@@ -793,7 +830,7 @@ def main(argv: List[str]) -> None:
     p = argparse.ArgumentParser(prog="paddock", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    def add(name: str, fn, help: str, path: bool = True, profile: bool = True, policy: bool = False, args: bool = False):
+    def add(name: str, fn, help: str, path: bool = True, profile: bool = True, policy: bool = False):
         s = sub.add_parser(name, help=help)
         if path:
             s.add_argument("path", nargs="?", default=".", help="workspace directory (default: cwd)")
@@ -802,27 +839,31 @@ def main(argv: List[str]) -> None:
         if policy:
             s.add_argument("--policies", help="comma-separated policy sets, replacing the profile's (e.g. github,npm; '' = strict; open = no firewall)")
             s.add_argument("--allow", help="comma-separated extra domains for this start")
-        if args:
-            s.add_argument("args", nargs=argparse.REMAINDER, help="arguments after --")
         s.set_defaults(fn=fn)
         return s
 
     add("up", cmd_up, "build image if needed, create/start the sandbox", policy=True).add_argument("--rebuild", action="store_true", help="rebuild the image without cache")
-    add("run", cmd_run, "up + `claude --dangerously-skip-permissions [args]`", policy=True, args=True)
+    add("run", cmd_run, "up + Codex (or --agent claude); agent arguments follow --", policy=True).add_argument(
+        "--agent", choices=("codex", "claude"), default="codex", help="agent to launch (default: codex)")
     add("shell", cmd_shell, "up + zsh inside the sandbox", policy=True)
-    add("exec", cmd_exec, "up + run a command inside: paddock exec [PATH] -- <cmd>", policy=True, args=True)
+    add("exec", cmd_exec, "up + run a command inside: paddock exec [PATH] -- <cmd>", policy=True)
     add("firewall", cmd_firewall, "re-apply egress policy to a running sandbox (loosen/tighten live)", policy=True)
     add("provision", cmd_provision, "re-run first-start provisioning (deps install etc.)", policy=True)
     add("stop", cmd_stop, "stop the sandbox", profile=False)
     add("rm", cmd_rm, "remove the sandbox container (keeps its volumes)", profile=False)
-    add("reset", cmd_reset, "remove the sandbox container AND its volumes (node_modules, Claude login)", profile=False)
+    add("reset", cmd_reset, "remove the sandbox container AND its volumes (node_modules, Codex and Claude logins)", profile=False)
     add("ls", cmd_ls, "list sandboxes", path=False, profile=False).add_argument("--json", action="store_true", help="machine-readable output (see docs/cli-json.md)")
     add("info", cmd_info, "resolve a path: repo, container, profile, state — changes nothing").add_argument("--json", action="store_true", help="machine-readable output (see docs/cli-json.md)")
     add("init", cmd_init, "write a profile + secrets skeleton for this repo").add_argument("--force", action="store_true")
 
+    forwarded = []
+    if argv and argv[0] in ("run", "exec") and "--" in argv:
+        split = argv.index("--")
+        forwarded = argv[split + 1:]
+        argv = argv[:split]
     a = p.parse_args(argv)
-    if getattr(a, "args", None) and a.args[0] == "--":
-        a.args = a.args[1:]
+    if a.cmd in ("run", "exec"):
+        a.args = forwarded
     if a.cmd != "init":
         docker_ok()
     a.fn(a)

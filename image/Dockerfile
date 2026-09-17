@@ -29,9 +29,9 @@ RUN mkdir -p /usr/local/share/npm-global && chown -R node:node /usr/local/share
 RUN mkdir /commandhistory && touch /commandhistory/.bash_history && chown -R node /commandhistory
 ENV PADDOCK=1
 
-# Claude config, pnpm store, turbo cache: node-owned, volume-backed.
-RUN mkdir -p /home/node/.claude /home/node/.local/share/pnpm/store /home/node/.cache/turbo && \
-  chown -R node:node /home/node/.claude /home/node/.local /home/node/.cache
+# Agent config, pnpm store, turbo cache: node-owned, volume-backed.
+RUN mkdir -p /home/node/.claude /home/node/.codex /home/node/.local/share/pnpm/store /home/node/.cache/turbo && \
+  chown -R node:node /home/node/.claude /home/node/.codex /home/node/.local /home/node/.cache
 
 RUN ARCH=$(dpkg --print-architecture) && \
   wget -q "https://github.com/dandavison/delta/releases/download/${GIT_DELTA_VERSION}/git-delta_${GIT_DELTA_VERSION}_${ARCH}.deb" && \
@@ -77,7 +77,7 @@ RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/
   -a "export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhistory/.bash_history" \
   -x
 
-RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} @openai/codex
 
 # Privileged helpers. sudo is limited to exactly these two scripts; policy in
 # /etc/paddock is root-owned and written from the host.
