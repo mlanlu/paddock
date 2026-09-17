@@ -58,11 +58,16 @@ cannot run.
   failed-provisioning retry, a stopped sandbox starting with Codex, image
   build inputs including Codex, and separate named agent mounts with no host
   Codex directory.
-- **Needs host verification:** Docker daemon was unavailable even with host
-  socket access (`Cannot connect to the Docker daemon`). Build the image, use
-  both Codex login methods, confirm Codex API access and blocked unrelated
-  egress, switch agents, then check login persistence after `rm`/recreation and
-  removal after `reset`. Status remains `REVIEW` until this is observed.
+- 2026-09-17 host check: rebuilt `paddock/sandbox:node22` and recreated the
+  `paddock-paddock` container. `codex --version` returned `codex-cli 0.154.0`;
+  Docker inspection showed a separate `paddock-paddock-codex` volume mounted at
+  `/home/node/.codex`. An unauthenticated request to `api.openai.com/v1/models`
+  reached the API (HTTP 401), while `example.com:443` was blocked. The two
+  other legacy containers were left alone.
+- **Still needs host verification:** complete both interactive Codex login
+  methods, authenticated API use, agent switching, login persistence after
+  `rm`/recreation, and login removal after `reset`. Status remains `REVIEW`
+  until this is observed.
 - The human requested a strict final Astra review before push. It found that a
   failed provision followed by a successful retry could permanently retain
   temporary npm/GitHub egress. The intended policy is now persisted separately
@@ -84,7 +89,8 @@ examples parse for both agents and run the app's available type checks.
   could not run because this host has no `cargo`. `npm run build` passed its
   TypeScript stage, then failed because the existing `node_modules` lacks
   `@rollup/rollup-darwin-arm64`; the lockfile lists it. A live app preview
-  also needs Docker, which is not running.
+  also needs a live app run; Docker is now running, but the preview has not
+  been checked.
 - Review 1 on commit eea7ad5 found that a running Claude sandbox's folder
   preview advertised Codex while its `up` action kept Claude. The UI now
   labels the policy as a fresh-start preview and explains the running state;
