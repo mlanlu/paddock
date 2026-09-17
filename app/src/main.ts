@@ -211,8 +211,15 @@ function showPlan(i: Info): void {
   const meta = el("div", "row-meta");
   meta.append(el("span", "muted", i.root));
   meta.append(el("span", "muted", `profile ${i.profile}`));
+  meta.append(el("span", "muted", "fresh start:"));
   meta.append(policyCell(i.policy, false));
   card.append(meta);
+
+  if (i.state === "running") {
+    card.append(
+      el("p", "muted", "This sandbox keeps its live agent and policy when you run paddock up. The preview applies after a stop/start."),
+    );
+  }
 
   if (i.profile_path === null) {
     // Documented cue: only profiles/default.json applies.
@@ -229,7 +236,7 @@ function showPlan(i: Info): void {
   }
 
   const actions = el("div", "row-actions");
-  actions.append(action(i.state === "running" ? "Restart" : "Start sandbox", () =>
+  actions.append(action(i.state === "running" ? "Ensure running" : "Start sandbox", () =>
     lifecycle("up", i.root, i.container),
   ));
   actions.append(action("Back to list", () => void refresh()));

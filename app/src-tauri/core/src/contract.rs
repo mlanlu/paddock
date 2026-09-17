@@ -72,7 +72,7 @@ impl Sandbox {
     }
 }
 
-/// `paddock info PATH --json` — what `up` *would* do, with no side effects.
+/// `paddock info PATH --json` — a fresh-start preview with no side effects.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Info {
     /// The directory that would be sandboxed.

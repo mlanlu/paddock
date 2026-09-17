@@ -76,7 +76,11 @@ examples parse for both agents and run the app's available type checks.
   could not run because this host has no `cargo`. `npm run build` passed its
   TypeScript stage, then failed because the existing `node_modules` lacks
   `@rollup/rollup-darwin-arm64`; the lockfile lists it. A live app preview
-  also needs Docker, which is not running. Review after commit remains.
+  also needs Docker, which is not running.
+- Review 1 on commit eea7ad5 found that a running Claude sandbox's folder
+  preview advertised Codex while its `up` action kept Claude. The UI now
+  labels the policy as a fresh-start preview and explains the running state;
+  see `docs/reviews/WP-CODEX-2.md`. Decision review remains.
 
 ---
 

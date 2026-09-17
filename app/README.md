@@ -10,8 +10,10 @@ implementation in Rust would be a second thing that can disagree with the first.
 
 The list and folder preview display `policy.agent` from the CLI JSON contract.
 The preview describes a fresh start with Codex; a running sandbox may have
-Claude selected instead, which the list shows. Reset removes both agent login
-volumes and asks for confirmation.
+Claude selected instead, which the list shows. For a running sandbox the
+preview labels this difference and its action only ensures the sandbox is up;
+it does not restart or switch agents. Reset removes both agent login volumes
+and asks for confirmation.
 
 ## Shape
 
