@@ -9,4 +9,7 @@ Claude agent. The preview promised a different agent from the resulting state.
 `up` retains a running sandbox's live agent and policy, and calls the action
 “Ensure running.”
 
-## Decision review — pending
+## Decision review — GPT-6 Astra, 2026-09-17
+
+Agrees that the fresh-start label, running-state explanation, and “Ensure
+running” action resolve F1. No further findings.

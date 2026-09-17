@@ -80,7 +80,9 @@ examples parse for both agents and run the app's available type checks.
 - Review 1 on commit eea7ad5 found that a running Claude sandbox's folder
   preview advertised Codex while its `up` action kept Claude. The UI now
   labels the policy as a fresh-start preview and explains the running state;
-  see `docs/reviews/WP-CODEX-2.md`. Decision review remains.
+  see `docs/reviews/WP-CODEX-2.md`. The decision review agreed; no further
+  finding. Status remains `REVIEW` until the Rust contract test and live app
+  preview can run.
 
 ---
 
