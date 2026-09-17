@@ -64,13 +64,19 @@ cannot run.
   egress, switch agents, then check login persistence after `rm`/recreation and
   removal after `reset`. Status remains `REVIEW` until this is observed.
 
-### WP-CODEX-2 — JSON contract, app preview, and setup docs · Show · `WIP`
+### WP-CODEX-2 — app contract and preview · Show · `REVIEW`
 
-Expose `policy.agent` in `ls --json` and `info --json`, update the Rust and
-TypeScript views, show the agent in the app's policy preview, and name both
-login volumes in the reset warning. Document the CLI commands and one-time
-container login. Verify JSON examples parse for both agents and run the app's
-available type checks.
+Consume `policy.agent` from WP-CODEX-1's `ls --json` and `info --json` contract
+in the Rust and TypeScript views, show the agent in the app's list and policy
+preview, and name both login volumes in the reset warning. Verify JSON
+examples parse for both agents and run the app's available type checks.
+
+- 2026-09-17: documented JSON examples and Rust fixture strings parsed as
+  JSON for both agents; `tsc --noEmit` passed. `cargo test -p paddock-core`
+  could not run because this host has no `cargo`. `npm run build` passed its
+  TypeScript stage, then failed because the existing `node_modules` lacks
+  `@rollup/rollup-darwin-arm64`; the lockfile lists it. A live app preview
+  also needs Docker, which is not running. Review after commit remains.
 
 ---
 

@@ -23,13 +23,21 @@ pub struct Port {
 /// The egress policy paddock last tried to apply.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Policy {
-    /// Persisted set names. The `claude` set is always added on top and is not
-    /// listed here. `open` anywhere in this list means there is no firewall.
+    /// The selected agent's service is added on top of these sets.
+    pub agent: Agent,
+    /// Persisted set names. `open` anywhere means there is no firewall.
     pub sets: Vec<String>,
     /// Extra domains from the profile and `--allow`.
     pub extra: Vec<String>,
     /// paddock's own summary, e.g. `github,npm +1`, `strict`, `open`.
     pub describe: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Agent {
+    Codex,
+    Claude,
 }
 
 impl Policy {
@@ -147,6 +155,7 @@ mod tests {
         "workspace": "/Users/you/Documents/openmatch-web",
         "closed": false,
         "policy": {
+          "agent": "claude",
           "sets": ["github", "npm"],
           "extra": ["fonts.googleapis.com"],
           "describe": "github,npm +1"
@@ -167,7 +176,7 @@ mod tests {
       "state": "exited",
       "provisioned": null,
       "ports": [{"host": 3010, "container": 3000}],
-      "policy": {"sets": ["github", "npm"], "extra": [], "describe": "github,npm"}
+      "policy": {"agent": "codex", "sets": ["github", "npm"], "extra": [], "describe": "github,npm"}
     }"#;
 
     #[test]
@@ -186,6 +195,7 @@ mod tests {
             }]
         );
         assert_eq!(s.policy.as_ref().unwrap().describe, "github,npm +1");
+        assert_eq!(s.policy.as_ref().unwrap().agent, Agent::Claude);
     }
 
     #[test]
@@ -197,6 +207,7 @@ mod tests {
             Some("/Users/you/Documents/openmatch/.git")
         );
         assert_eq!(got.provisioned, None);
+        assert_eq!(got.policy.as_ref().unwrap().agent, Agent::Codex);
         assert!(!got.is_new());
         assert!(!got.has_no_profile_of_its_own());
     }
@@ -230,12 +241,14 @@ mod tests {
     #[test]
     fn an_open_policy_is_recognised() {
         let p = Policy {
+            agent: Agent::Codex,
             sets: vec!["open".into()],
             extra: vec![],
             describe: "open".into(),
         };
         assert!(p.is_open());
         let p = Policy {
+            agent: Agent::Claude,
             sets: vec!["github".into()],
             extra: vec![],
             describe: "github".into(),

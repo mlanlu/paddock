@@ -9,6 +9,7 @@ export interface Port {
 }
 
 export interface Policy {
+  agent: "codex" | "claude";
   sets: string[];
   extra: string[];
   describe: string;

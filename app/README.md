@@ -1,12 +1,17 @@
 # The paddock desktop app
 
 A desktop front end for the `paddock` CLI: pick a folder, watch its sandbox come
-up, and — from M2 — get a terminal on `claude` inside it. Tauri, so a Rust core
+up, and — from M2 — get a terminal on the selected agent inside it. Tauri, so a Rust core
 and the system WebView rather than a bundled browser.
 
 The CLI stays the engine. This app shells out to `paddock` and never talks to
 Docker directly. paddock's value is its security model, and a second
 implementation in Rust would be a second thing that can disagree with the first.
+
+The list and folder preview display `policy.agent` from the CLI JSON contract.
+The preview describes a fresh start with Codex; a running sandbox may have
+Claude selected instead, which the list shows. Reset removes both agent login
+volumes and asks for confirmation.
 
 ## Shape
 

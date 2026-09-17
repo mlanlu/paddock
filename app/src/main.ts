@@ -68,16 +68,16 @@ function policyCell(policy: Policy | null, closed: boolean): HTMLElement {
   if (closed) {
     wrap.append(el("span", "bad", "CLOSED"));
     wrap.append(
-      el("span", "muted", policy ? ` (wanted ${policy.describe})` : " (policy not applied)"),
+      el("span", "muted", policy ? ` (wanted ${policy.agent}: ${policy.describe})` : " (policy not applied)"),
     );
     return wrap;
   }
   if (!policy) return el("span", "muted", "—");
   if (policy.sets.includes("open")) {
-    wrap.append(el("span", "bad", "open — no firewall"));
+    wrap.append(el("span", "bad", `${policy.agent}: open — no firewall`));
     return wrap;
   }
-  wrap.append(el("span", "", policy.describe));
+  wrap.append(el("span", "", `${policy.agent}: ${policy.describe}`));
   return wrap;
 }
 
@@ -170,12 +170,11 @@ async function lifecycle(command: Lifecycle, path: string, container: string): P
 }
 
 async function confirmReset(s: Sandbox): Promise<void> {
-  // `reset` destroys the volumes: node_modules and, more painfully, the Claude
-  // login. `rm` does not, and does not ask.
+  // `reset` destroys the volumes and both agent logins. `rm` keeps them.
   const ok = window.confirm(
     `Reset ${s.container}?\n\n` +
-      `This removes the container AND its volumes — node_modules and the Claude ` +
-      `login inside the sandbox. You will have to log in again.\n\n` +
+      `This removes the container AND its volumes — node_modules and the Codex ` +
+      `and Claude logins inside the sandbox. You will have to log in again.\n\n` +
       `To keep them, use Remove instead.`,
   );
   if (ok) await lifecycle("reset", s.workspace, s.container);
